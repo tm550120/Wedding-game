@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
 <title>司会画面｜クイズ＆以心伝心ゲーム 回答状況</title>
 <link rel="stylesheet" href="css/style.css">
 <link rel="stylesheet" href="css/host.css">
@@ -29,17 +30,23 @@
     <h2>集計用URLが未設定です</h2>
     <p><code>js/config.js</code> の <code>HOST.statsUrl</code> に、Apps Script ウェブアプリの URL（…/exec）を設定してください。<br>
       手順は README.md の「司会画面」にあります。</p>
-    <p>画面の見た目だけ確認するには <a href="?demo=1">host.html?demo=1</a> を開いてください（ダミーの数字が増えていきます）。</p>
+    <p>画面の見た目だけ確認するには <a href="?demo=1">host.html?demo=1</a> を開いてください（仮のスライドとダミーの数字で動きます）。</p>
   </section>
 
   <footer class="host-foot">
     <nav class="host-nav" id="nav" aria-label="表示する問題"></nav>
+    <span class="slide-pos" id="slide-pos"></span>
     <div class="host-status">
       <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字）</span>
       <span class="badge badge-error hidden" id="badge-error" role="status"></span>
       <span class="host-updated" id="updated">最終更新 --:--:--</span>
     </div>
   </footer>
+
+  <!-- スライドショー: 画像のスライドを全面に重ねる（<img> は js/host.js が入れる）。グラフのスライドのときは隠す -->
+  <div class="stage hidden" id="stage">
+    <p class="stage-message" id="stage-message">スライドを読み込み中…</p>
+  </div>
 
   <script type="module" src="js/host.js"></script>
 </body>

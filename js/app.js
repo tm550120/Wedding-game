@@ -166,6 +166,7 @@ function renderQuestion() {
   setLines($("question-prompt"), locked ? [section.answerLabel(index) + "は", "送信済みです"] : section.promptLines);
 
   // 送信済みの問題は、送った回答を表示したまま選択肢を押せなくする
+  $("question-choices").classList.toggle("cols-2", section.choiceColumns === 2);
   $("question-choices").replaceChildren(
     ...section.choices.map((choice) => {
       const b = choiceButton(choice, current === choice, () => {

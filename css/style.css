@@ -85,3 +85,7 @@ button.choice.selected:disabled{ opacity:1; }
   padding:12px 12px; margin:16px 0 0;
 }
 .error a{ color:var(--gold-light); }
+
+/* ---- 4択クイズ: 選択肢を 2×2 に並べる（config.js の choiceColumns: 2） ---- */
+.choices.cols-2{ display:grid; grid-template-columns:1fr 1fr; }
+.choices.cols-2 button.choice{ font-size:26px; padding:24px 10px; }
