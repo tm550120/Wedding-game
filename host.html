@@ -5,48 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="robots" content="noindex">
 <meta name="referrer" content="no-referrer">
-<title>司会画面｜クイズ＆以心伝心ゲーム 回答状況</title>
+<title>司会画面｜クイズ＆以心伝心ゲーム</title>
 <link rel="stylesheet" href="css/style.css">
 <link rel="stylesheet" href="css/host.css">
 </head>
 <body class="host">
-  <header class="host-head">
-    <div>
-      <p class="host-kicker">✦ <span id="view-kicker"></span> ✦</p>
-      <h1 id="view-title"></h1>
-    </div>
-    <div class="host-total">
-      <span class="host-total-label">回答</span>
-      <span class="host-total-num" id="total">0</span>
-      <span class="host-total-unit">人</span>
-    </div>
-  </header>
+  <!-- スライド: 画像を全面に映す（<img> は js/host.js が入れる） -->
+  <div class="stage" id="stage">
+    <p class="stage-message hidden" id="stage-message">スライドを読み込み中…</p>
+  </div>
 
-  <!-- 選択肢ごとの横棒（js/host.js が生成） -->
-  <main class="bars" id="bars"></main>
+  <!-- 問題のスライドに重ねる、受付の状態と回答した人数（合計だけ） -->
+  <div class="gate hidden" id="gate" data-view="ready">
+    <p class="gate-status"><span class="gate-dot"></span><span id="gate-status"></span></p>
+    <p class="gate-count" id="gate-count">
+      <span class="gate-label">回答</span>
+      <span class="gate-num" id="gate-total">0</span>
+      <span class="gate-unit">人</span>
+    </p>
+  </div>
+
+  <!-- 正解の発表（スライドの上に重ねる） -->
+  <div class="reveal hidden" id="reveal">
+    <div class="reveal-card">
+      <p class="reveal-kicker" id="reveal-kicker"></p>
+      <p class="reveal-label" id="reveal-label">正解は</p>
+      <p class="reveal-answer" id="reveal-answer"></p>
+    </div>
+  </div>
 
   <!-- Apps Script の URL が未設定のときの案内 -->
   <section class="card host-setup hidden" id="setup">
-    <h2>集計用URLが未設定です</h2>
+    <h2>Apps Script の URL が未設定です</h2>
     <p><code>js/config.js</code> の <code>HOST.statsUrl</code> に、Apps Script ウェブアプリの URL（…/exec）を設定してください。<br>
       手順は README.md の「司会画面」にあります。</p>
-    <p>画面の見た目だけ確認するには <a href="?demo=1">host.html?demo=1</a> を開いてください（仮のスライドとダミーの数字で動きます）。</p>
+    <p>画面の流れだけ確認するには <a href="?demo=1">host.html?demo=1</a> を開いてください（仮のスライドとダミーの数字で動きます）。</p>
   </section>
 
+  <!-- 司会者向けの小さな表示: いま何枚目か・次の操作・通信の状態 -->
   <footer class="host-foot">
-    <nav class="host-nav" id="nav" aria-label="表示する問題"></nav>
-    <span class="slide-pos" id="slide-pos"></span>
+    <p class="host-hint"><span id="slide-pos"></span><span id="hint"></span></p>
     <div class="host-status">
-      <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字）</span>
+      <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字・正解）</span>
       <span class="badge badge-error hidden" id="badge-error" role="status"></span>
-      <span class="host-updated" id="updated">最終更新 --:--:--</span>
+      <span class="host-updated" id="updated"></span>
     </div>
   </footer>
-
-  <!-- スライドショー: 画像のスライドを全面に重ねる（<img> は js/host.js が入れる）。グラフのスライドのときは隠す -->
-  <div class="stage hidden" id="stage">
-    <p class="stage-message" id="stage-message">スライドを読み込み中…</p>
-  </div>
 
   <script type="module" src="js/host.js"></script>
 </body>

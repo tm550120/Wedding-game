@@ -1,66 +1,75 @@
 /*
  * 司会画面（host.html）専用のスタイル。色とフォントは style.css のものを使う。
  * 16:9 のプロジェクター投影を想定し、大きさは画面の高さ（vh）基準で決める。
+ * スライドの画像を全面に映し、その上に「受付の状態と人数」「正解」「司会者向けの小さな案内」を重ねる。
  */
-body.host{
-  height:100vh; min-height:0; overflow:hidden;
-  display:grid; grid-template-rows:auto 1fr auto; align-items:stretch;
-  padding:4vh 5vw 2.5vh; gap:2.5vh;
-}
+body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block; background:#000; cursor:pointer; }
 
-/* ---- 上段: 問題名と回答人数 ---- */
-.host-head{ display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid rgba(201,162,39,.55); padding-bottom:2vh; }
-.host-kicker{ margin:0 0 .5vh; color:var(--gold-light); font-size:2.8vh; letter-spacing:.2em; }
-.host-head h1{ margin:0; text-align:left; font-size:10vh; line-height:1.15; letter-spacing:.1em; }
-.host-total{ display:flex; align-items:baseline; gap:1.2vw; white-space:nowrap; }
-.host-total-label{ color:var(--gold-light); font-size:3.6vh; letter-spacing:.2em; }
-.host-total-num{ font-size:12vh; line-height:1; font-weight:700; color:var(--gold-light); font-variant-numeric:tabular-nums; min-width:1.2em; text-align:right; }
-.host-total-unit{ font-size:4.5vh; }
-
-/* ---- 中段: 横棒グラフ。行数（4 または 6）は --rows で受け取り、文字の大きさを合わせる ---- */
-.bars{ --rows:3; --fs:min(11vh, calc(42vh / var(--rows))); display:flex; flex-direction:column; justify-content:space-evenly; min-height:0; }
-.bar-row{ display:grid; grid-template-columns:calc(var(--fs) * 1.9) 1fr calc(var(--fs) * 3.8); align-items:center; gap:2vw; }
-.bar-label{ font-size:var(--fs); font-weight:700; text-align:center; letter-spacing:.05em; white-space:nowrap; }
-.bar-track{ height:calc(var(--fs) * 1.25); background:rgba(255,255,255,.07); border:1px solid rgba(201,162,39,.35); border-radius:calc(var(--fs) * .2); overflow:hidden; }
-.bar-fill{
-  height:100%; width:0;
-  background:linear-gradient(90deg, #a8841a 0%, var(--gold) 55%, var(--gold-light) 100%);
-  border-radius:inherit;
-  transition:width .8s cubic-bezier(.22,.8,.3,1);
-}
-.bar-count{ font-size:var(--fs); font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.bar-count small{ font-size:.42em; font-weight:400; color:var(--gold-light); margin-left:.25em; }
-.bar-count .bar-pct{ margin-left:.9em; }
-/* 将来の正解発表用: 行に .correct / .dimmed を付けるだけで強調できるようにしてある（いまは未使用） */
-.bar-row.dimmed{ opacity:.35; transition:opacity .6s ease; }
-.bar-row.correct .bar-track{ box-shadow:0 0 0 .4vh var(--paper); }
-
-/* ---- 下段: 問題の切り替えと通信状態（司会者向けなので控えめに） ---- */
-.host-foot{ display:flex; justify-content:space-between; align-items:center; gap:2vw; }
-.host-nav{ display:flex; gap:.6vw; flex-wrap:wrap; }
-.host-nav button{
-  appearance:none; cursor:pointer; font-family:inherit; font-size:2.2vh;
-  min-width:4.4vh; height:4.4vh; padding:0 1.2vh; border-radius:2.2vh;
-  border:1px solid rgba(201,162,39,.55); background:none; color:var(--gold-light);
-}
-.host-nav button.current{ background:var(--gold); border-color:var(--gold); color:#fff; }
-.host-nav button:focus-visible{ outline:2px solid var(--paper); outline-offset:2px; }
-.host-status{ display:flex; align-items:center; gap:1.2vw; font-size:2.2vh; color:#d9d2ba; white-space:nowrap; }
-.host-updated{ font-variant-numeric:tabular-nums; letter-spacing:.08em; }
-.badge{ padding:.6vh 1.4vh; border-radius:2vh; font-size:2vh; max-width:42vw; overflow:hidden; text-overflow:ellipsis; }
-.badge-demo{ border:1px solid var(--gold-light); color:var(--gold-light); }
-.badge-error{ border:1px solid rgba(255,170,140,.6); color:#ffd9cc; }
-
-/* ---- スライドショー: 画像のスライドを全面に重ねる。問題のボタンは隠し、いま何枚目かだけ小さく出す ---- */
-body.host.slideshow{ cursor:pointer; }
-body.host.slideshow .host-nav{ display:none; }
-.slide-pos{ font-size:2.2vh; color:#d9d2ba; opacity:.6; font-variant-numeric:tabular-nums; letter-spacing:.08em; }
-.stage{ position:fixed; inset:0; z-index:10; background:#000; display:flex; align-items:center; justify-content:center; }
+/* ---- スライド ---- */
+.stage{ position:fixed; inset:0; background:#000; display:flex; align-items:center; justify-content:center; }
 .stage img{ position:absolute; inset:0; width:100%; height:100%; object-fit:contain; visibility:hidden; user-select:none; }
 .stage img.current{ visibility:visible; }
 .stage-message{ margin:0; font-size:3vh; letter-spacing:.15em; color:#d9d2ba; }
 
+/* ---- 受付の状態と回答した人数（右下に重ねる） ---- */
+.gate{
+  position:fixed; right:3vw; bottom:7vh; z-index:40;
+  display:flex; align-items:center; gap:2.2vw;
+  padding:1.4vh 2.4vw 1.4vh 1.8vw; border-radius:2.2vh;
+  background:rgba(11,36,27,.92); border:.3vh solid var(--gold);
+  box-shadow:0 1vh 4vh rgba(0,0,0,.55);
+  white-space:nowrap;
+}
+.gate p{ margin:0; }
+.gate-status{ display:flex; align-items:center; gap:1.2vh; font-size:3.4vh; letter-spacing:.18em; color:var(--gold-light); }
+.gate-dot{ width:1.8vh; height:1.8vh; border-radius:50%; background:#8fe0b0; animation:gate-pulse 1.4s ease-in-out infinite; }
+.gate-count{ display:flex; align-items:baseline; gap:1vw; }
+.gate-label{ font-size:3.4vh; letter-spacing:.2em; color:var(--gold-light); }
+.gate-num{ font-size:10vh; line-height:1; font-weight:700; color:var(--paper); font-variant-numeric:tabular-nums; min-width:1.2em; text-align:right; }
+.gate-unit{ font-size:4vh; }
+.gate[data-view="ready"]{ padding-right:1.8vw; opacity:.85; }
+.gate[data-view="ready"] .gate-dot, .gate[data-view="closed"] .gate-dot{ display:none; }
+/* 締め切り: 金色の札にして、受付中との違いが遠くからでも分かるようにする */
+.gate[data-view="closed"] .gate-status{ padding:.8vh 1.8vh .8vh 2.2vh; border-radius:1.2vh; background:var(--gold); color:#fff; font-weight:700; }
+.gate[data-view="closed"] .gate-num{ color:var(--gold-light); }
+@keyframes gate-pulse{ 0%,100%{ opacity:1; transform:scale(1); } 50%{ opacity:.35; transform:scale(.8); } }
+
+/* ---- 正解の発表（スライドを少し暗くして、中央に重ねる） ---- */
+.reveal{
+  position:fixed; inset:0; z-index:30; display:flex; align-items:center; justify-content:center;
+  padding-bottom:14vh; /* 右下の人数の表示と重ならないよう、少し上に寄せる */
+  background:rgba(6,20,15,.74); animation:reveal-bg .5s ease both;
+}
+.reveal-card{
+  min-width:52vh; padding:4vh 9vh 4vh; text-align:center; border-radius:3vh;
+  background:radial-gradient(120% 100% at 50% 0%, #1a4634 0%, var(--green) 55%, var(--green-dark) 100%);
+  border:.4vh solid var(--gold);
+  box-shadow:0 0 0 1.2vh rgba(201,162,39,.18), 0 3vh 10vh rgba(0,0,0,.6);
+  animation:reveal-card .7s cubic-bezier(.2,.9,.3,1.15) both;
+}
+.reveal-card p{ margin:0; }
+.reveal-kicker{ font-size:3.4vh; letter-spacing:.3em; color:var(--gold-light); }
+.reveal-label{ margin-top:2vh !important; font-size:6vh; letter-spacing:.35em; text-indent:.35em; }
+.reveal-answer{ font-size:32vh; line-height:1.05; font-weight:700; color:var(--gold-light); text-shadow:0 0 6vh rgba(232,207,122,.45); }
+.reveal.missing .reveal-label{ font-size:5vh; }
+.reveal.missing .reveal-answer{ margin-top:2vh; font-size:3vh; font-weight:400; text-shadow:none; }
+@keyframes reveal-bg{ from{ opacity:0; } to{ opacity:1; } }
+@keyframes reveal-card{ from{ opacity:0; transform:scale(.8); } to{ opacity:1; transform:scale(1); } }
+
+/* ---- 司会者向けの小さな表示（下端。会場からは目立たない大きさにする） ---- */
+.host-foot{
+  position:fixed; left:0; right:0; bottom:0; z-index:50; pointer-events:none;
+  display:flex; justify-content:space-between; align-items:center; gap:2vw;
+  padding:1vh 1.5vw; font-size:1.9vh; color:#d9d2ba; text-shadow:0 0 .6vh #000, 0 0 .6vh #000;
+}
+.host-hint{ margin:0; display:flex; gap:1.4vw; letter-spacing:.08em; opacity:.8; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.host-status{ display:flex; align-items:center; gap:1.2vw; white-space:nowrap; }
+.host-updated{ font-variant-numeric:tabular-nums; letter-spacing:.08em; opacity:.6; }
+.badge{ padding:.5vh 1.4vh; border-radius:2vh; font-size:1.9vh; max-width:55vw; overflow:hidden; text-overflow:ellipsis; background:rgba(11,36,27,.85); }
+.badge-demo{ border:1px solid var(--gold-light); color:var(--gold-light); }
+.badge-error{ border:1px solid rgba(255,170,140,.6); color:#ffd9cc; }
+
 /* ---- 未設定の案内 ---- */
-.host-setup{ max-width:70vw; align-self:center; justify-self:center; padding:5vh 4vw; font-size:3vh; line-height:1.9; text-align:center; }
+.host-setup{ position:fixed; z-index:60; top:50%; left:50%; transform:translate(-50%,-50%); max-width:70vw; padding:5vh 4vw; font-size:3vh; line-height:1.9; text-align:center; background:var(--green); cursor:auto; }
 .host-setup h2{ margin:0 0 2vh; font-size:5vh; letter-spacing:.1em; color:var(--gold-light); }
 .host-setup code, .host-setup a{ color:var(--gold-light); }

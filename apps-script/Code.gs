@@ -1,26 +1,33 @@
 /**
- * Wedding-game 司会画面用の集計 API（Google Apps Script ウェブアプリ）
+ * Wedding-game 用の API（Google Apps Script ウェブアプリ）
  *
- * Google フォームの回答が入るスプレッドシートを読み、選択肢ごとの「人数だけ」を JSON で返す。
- * 名前は集計の重複排除にだけ使い、レスポンスには一切含めない。
+ * 1つの URL（…/exec）で、次のものを JSON で返す。
  *
- * 返す JSON:
- *   {
- *     "updatedAt": "2026-11-16T09:00:00.000Z",
- *     "quiz": { "1": {"A":3,"B":5,"C":1,"D":0,"total":9}, ... , "10": {...} },
- *     "pred": { "0問":0, "1問":2, ... , "5問":1, "total":9 }
- *   }
- *   シートが見つからないなど設定に問題があるときは "errors": ["..."] が付く（その分の人数は 0）。
+ *   誰でも読める（名前・正解・選択肢ごとの人数は含めない）
+ *     …/exec                → 回答した「人数だけ」と受付状態
+ *         { "updatedAt": "…", "quiz": { "1": {"total": 9}, …, "10": {"total": 0} }, "pred": {"total": 9},
+ *           "state": { "open": "q5", "lastClosed": null, "done": ["q1","q2"], "rev": 12, "updatedAt": "…" } }
+ *     …/exec?action=state   → 受付状態だけ（ゲストの回答ページが2〜3秒ごとに読む）
+ *         { "open": "q5" | "pred" | null, "lastClosed": "q4" | null, "done": [...], "rev": 12, "updatedAt": "…" }
  *
- * 呼び出し方:
- *   .../exec                          → 集計の JSON（司会画面は通常こちらを fetch する。誰でも読める）
- *   .../exec?callback=関数名           → JSONP（fetch が使えない環境向けの予備）
- *   .../exec?action=slides&key=司会キー → スライド一覧の JSON（司会キーが合うときだけ返す。下の「スライド一覧」を参照）
+ *   司会キーが合うときだけ（&key=司会キー）
+ *     …/exec?action=setOpen&target=q5|pred|none|idle → 受付の切り替え。{ "ok": true, "state": {…} }
+ *     …/exec?action=answers                          → 正解の一覧。{ "answers": { "1": "B", … }, "missing": [3] }
+ *     …/exec?action=slides                           → スライド一覧（下の「スライド一覧」を参照）
+ *     …/exec?action=reset                            → 受付の記録をすべて消す（リハーサルのあと）
+ *
+ *   どれも ?callback=関数名 を付けると JSONP で返す（fetch が使えない環境向けの予備）。
+ *
+ * 【受付状態と「受付時間」】
+ *   司会画面が setOpen を呼ぶたびに、問題ごとの「受付を開けた時刻・閉じた時刻」を記録する。
+ *   人数に数えるのは、タイムスタンプが受付時間内（閉じたあと WINDOW_GRACE_MS までを含む）の行だけ。
+ *   受付前・締め切り後に Google フォームへ直接送られた回答は、シートには残るが数えない。
  *
  * 【秘密の値はコードに書かない】スライドの ID と司会キーは「スクリプト プロパティ」に置く
  * （プロジェクトの設定 → スクリプト プロパティ）。このファイルは公開リポジトリにも置かれるため。
  *   SLIDES_DECK_ID : Google スライドの ID（URL https://docs.google.com/presentation/d/【ここ】/edit）
  *   HOST_KEY       : 司会キー（16文字以上のランダムな英数字。setupHostKey を実行すると自動で作れる）
+ * 正解は、クイズのスプレッドシートの「正解」タブに書く（A列: 問題番号 1〜10、B列: 正解 A/B/C/D）。
  *
  * スライド一覧を使うには、左の「サービス」から「Google Slides API」（識別子 Slides）を追加しておく。
  *
@@ -46,8 +53,8 @@ const PRED_SPREADSHEET_ID = "";
 // 予想の回答が入るタブ（シート）の名前。
 const PRED_SHEET_NAME = "フォームの回答 2";
 
-// 【将来用・現在は未使用】正解を書いておくタブの名前（A列: 問題番号 1〜10、B列: 正解 A/B/C/D）。
-// 正解発表の機能を足すときにここから読む。いまはこのタブを読まないし、JSON にも含めない。
+// 正解を書いておくタブの名前（クイズのスプレッドシートの中。A列: 問題番号 1〜10、B列: 正解 A/B/C/D）。
+// 司会キーが合う ?action=answers にだけ返す。集計や受付状態の JSON には含めない。
 const ANSWER_SHEET_NAME = "正解";
 
 // 見出し（1行目）から列を探すためのキーワード。列の並び順には依存しない。
@@ -61,17 +68,28 @@ const PRED_CHOICES = ["0問", "1問", "2問", "3問", "4問", "5問"];
 
 // 集計結果をキャッシュする秒数。司会画面は約3秒ごとに取りに来る。
 const CACHE_SECONDS = 2;
-const CACHE_KEY = "wg_stats_v2";
+const CACHE_KEY = "wg_stats_v3";
+
+/* ---- 受付状態（どの問題の回答を受け付けているか） ---- */
+const GATE_PROP = "WG_GATE"; // 本体。スクリプト プロパティに JSON で置く（司会画面の setOpen だけが書き換える）
+const GATE_CACHE_KEY = "wg_gate_v1"; // 公開用の受付状態の写し（ゲストが読むたびにプロパティを読まないため）
+const GATE_CACHE_SECONDS = 300;
+// 締め切ったあと、この時間（ミリ秒）までに記録された回答は数える（送信の途中だった人の分）
+const WINDOW_GRACE_MS = 5000;
+// 受付を開けた時刻より、この時間（ミリ秒）だけ早い回答も数える（時計のずれの分）
+const WINDOW_EARLY_MS = 1000;
+// 1つの問題につき覚えておく受付時間の数（開け直しを繰り返したときは、古い2つを1つにまとめる）
+const MAX_WINDOWS = 8;
 
 /* ---- スライド一覧（?action=slides）用。値そのものはスクリプト プロパティに置く ---- */
 const PROP_DECK_ID = "SLIDES_DECK_ID";
 const PROP_HOST_KEY = "HOST_KEY";
 const HOST_KEY_MIN_LENGTH = 16;
 
-// スライドの並びと種類（どれがグラフのスライドか）をキャッシュする秒数。
+// スライドの並びと種類（どれが問題のスライドか）をキャッシュする秒数。
 // スライドを並べ替えたり文字を直したりしたあと、この秒数以内に反映される。
 const SLIDE_LIST_CACHE_SECONDS = 60;
-const SLIDE_LIST_CACHE_KEY = "wg_slide_list_v1";
+const SLIDE_LIST_CACHE_KEY = "wg_slide_list_v2";
 
 // スライド画像の URL をキャッシュする秒数。Slides API が返す URL は約30分で切れるので、それより短くする。
 // スライドの見た目を直したあとは、司会画面で R キー（refresh=all）を押すと作り直す。
@@ -87,13 +105,21 @@ const THUMB_BUDGET_MS = 20000;
 
 function doGet(e) {
   const params = (e && e.parameter) || {};
+  // ゲスト全員が2〜3秒ごとに読むので、いちばん先に返す
+  if (params.action === "state") return respond_(getPublicStateJson_(), params.callback);
+  if (params.action === "setOpen") return respond_(JSON.stringify(handleSetOpen_(params)), params.callback);
+  if (params.action === "answers") return respond_(JSON.stringify(buildAnswersResponse_(params)), params.callback);
+  if (params.action === "reset") return respond_(JSON.stringify(handleReset_(params)), params.callback);
   if (params.action === "slides") return respond_(JSON.stringify(buildSlidesResponse_(params)), params.callback);
   return respond_(getStatsJson_(), params.callback);
 }
 
-/** エディタから手動実行して、権限の承認と集計結果の確認をするための関数。 */
+/**
+ * エディタから手動実行して、権限の承認と集計結果の確認をするための関数。
+ * ログには選択肢ごとの人数も出る（ウェブアプリが返すのは合計だけ）。受付時間外の回答は数えない。
+ */
 function testAggregate() {
-  Logger.log(JSON.stringify(buildStats_(), null, 2));
+  Logger.log(JSON.stringify(buildStats_(readGate_()), null, 2));
 }
 
 function respond_(json, callback) {
@@ -105,16 +131,22 @@ function respond_(json, callback) {
   return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);
 }
 
+/** 公開する集計（人数の合計だけ）に、いまの受付状態を付けて返す。 */
 function getStatsJson_() {
-  let cache = null;
-  try {
-    cache = CacheService.getScriptCache();
-    const hit = cache.get(CACHE_KEY);
-    if (hit) return hit;
-  } catch (err) {
-    cache = null; // キャッシュが使えなくても集計は続ける
+  return '{"state":' + getPublicStateJson_() + "," + getTotalsJson_().slice(1);
+}
+
+function getTotalsJson_() {
+  const cache = scriptCache_();
+  if (cache) {
+    try {
+      const hit = cache.get(CACHE_KEY);
+      if (hit) return hit;
+    } catch (err) {
+      /* 読めなければ集計し直す */
+    }
   }
-  const stats = buildStats_();
+  const stats = toPublicStats_(buildStats_(readGate_()));
   const json = JSON.stringify(stats);
   if (cache && !stats.errors) {
     try {
@@ -126,20 +158,29 @@ function getStatsJson_() {
   return json;
 }
 
+/** 選択肢ごとの人数を落として、合計だけにする（多数派が分かると答えのヒントになるため公開しない）。 */
+function toPublicStats_(stats) {
+  const out = { updatedAt: stats.updatedAt, quiz: {}, pred: { total: stats.pred.total } };
+  for (const no in stats.quiz) out.quiz[no] = { total: stats.quiz[no].total };
+  if (stats.errors) out.errors = stats.errors;
+  return out;
+}
+
 /* ===================== 集計 ===================== */
 
-function buildStats_() {
+/** gate.windows（問題ごとの受付時間）の中に記録された回答だけを数える。 */
+function buildStats_(gate) {
   const stats = { updatedAt: new Date().toISOString(), quiz: emptyQuiz_(), pred: emptyCounts_(PRED_CHOICES) };
   const errors = [];
 
   // クイズと予想は別々に読む。片方の設定が間違っていても、もう片方は表示できるようにする
   try {
-    stats.quiz = aggregateQuiz_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME));
+    stats.quiz = aggregateQuiz_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME), gate.windows);
   } catch (err) {
     errors.push("クイズ: " + err.message);
   }
   try {
-    stats.pred = aggregatePred_(readRows_(PRED_SPREADSHEET_ID || QUIZ_SPREADSHEET_ID, PRED_SHEET_NAME));
+    stats.pred = aggregatePred_(readRows_(PRED_SPREADSHEET_ID || QUIZ_SPREADSHEET_ID, PRED_SHEET_NAME), gate.windows);
   } catch (err) {
     errors.push("予想: " + err.message);
   }
@@ -158,14 +199,15 @@ function readRows_(spreadsheetId, sheetName) {
 }
 
 /**
- * クイズの集計。rows[0] が見出し。
- * 1行は「1人 × 1問」（その問題の列だけが埋まっている）。同じ名前 × 同じ問題は最新の行だけを数える。
+ * クイズの有効な回答を集める。rows[0] が見出し。返すのは 問題番号 → { 回答者キー: {value, ts} }。
+ * 1行は「1人 × 1問」（その問題の列だけが埋まっている）。その問題の受付時間内の行だけを対象にし、
+ * 同じ名前 × 同じ問題は最新の行だけを残す（締め切り後の送り直しで、受付中の回答が上書きされることはない）。
  */
-function aggregateQuiz_(rows) {
+function collectQuiz_(rows, windows) {
   const header = (rows[0] || []).map(normalize_);
   const nameCol = findColumn_(header, NAME_HEADER_KEYWORD);
   if (nameCol < 0) throw new Error("見出しに「" + NAME_HEADER_KEYWORD + "」を含む列がありません");
-  const tsCol = findTimestampColumn_(header);
+  const tsCol = requireTimestampColumn_(header);
 
   // 問題番号 → 列番号。見出しに「第N問」を含む列を探す
   const questionCols = {};
@@ -177,29 +219,34 @@ function aggregateQuiz_(rows) {
   });
   if (Object.keys(questionCols).length === 0) throw new Error("見出しに「第1問」などを含む列がありません");
 
-  const latest = {}; // 問題番号 → { 回答者キー: {value, ts} }
+  const latest = {};
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
     const who = respondentKey_(row[nameCol], r);
-    const ts = timestampOf_(tsCol < 0 ? null : row[tsCol]);
+    const ts = timestampOf_(row[tsCol]);
     for (const no in questionCols) {
       const value = normalize_(row[questionCols[no]]).toUpperCase();
       if (QUIZ_CHOICES.indexOf(value) < 0) continue; // 空欄や想定外の値は数えない
+      if (!inWindows_(ts, (windows || {})["q" + no])) continue; // 受付時間外
       keepLatest_((latest[no] = latest[no] || {}), who, value, ts);
     }
   }
+  return latest;
+}
 
+function aggregateQuiz_(rows, windows) {
+  const latest = collectQuiz_(rows, windows);
   const quiz = emptyQuiz_();
   for (const no in latest) quiz[no] = countValues_(latest[no], QUIZ_CHOICES);
   return quiz;
 }
 
-/** 予想の集計。同じ名前は最新の行だけを数える。 */
-function aggregatePred_(rows) {
+/** 予想の集計。受付時間内の行だけを対象にし、同じ名前は最新の行だけを数える。 */
+function aggregatePred_(rows, windows) {
   const header = (rows[0] || []).map(normalize_);
   const nameCol = findColumn_(header, NAME_HEADER_KEYWORD);
   if (nameCol < 0) throw new Error("見出しに「" + NAME_HEADER_KEYWORD + "」を含む列がありません");
-  const tsCol = findTimestampColumn_(header);
+  const tsCol = requireTimestampColumn_(header);
 
   let predCol = findColumn_(header, PRED_HEADER_KEYWORD);
   if (predCol < 0) {
@@ -214,10 +261,44 @@ function aggregatePred_(rows) {
   for (let r = 1; r < rows.length; r++) {
     const row = rows[r];
     const value = normalizePred_(row[predCol]);
-    if (value === null) continue;
-    keepLatest_(latest, respondentKey_(row[nameCol], r), value, timestampOf_(tsCol < 0 ? null : row[tsCol]));
+    const ts = timestampOf_(row[tsCol]);
+    if (value === null || !inWindows_(ts, (windows || {}).pred)) continue;
+    keepLatest_(latest, respondentKey_(row[nameCol], r), value, ts);
   }
   return countValues_(latest, PRED_CHOICES);
+}
+
+/**
+ * 正解数のランキング（受付時間内の回答だけで数える）。[{ name, correct, answered }] を正解数の多い順に返す。
+ * 名前を含むので、ウェブアプリからは返さない。エディタの logRanking からだけ使う。
+ */
+function rankQuiz_(rows, windows, answers) {
+  const latest = collectQuiz_(rows, windows);
+  const byWho = {};
+  for (const no in latest) {
+    for (const who in latest[no]) {
+      const name = who.replace(/^name:/, "").replace(/^row:(\d+)$/, "（名前なし・$1行目）");
+      const entry = (byWho[who] = byWho[who] || { name: name, correct: 0, answered: 0 });
+      entry.answered += 1;
+      if (latest[no][who].value === answers[no]) entry.correct += 1;
+    }
+  }
+  return Object.keys(byWho)
+    .map(function (who) {
+      return byWho[who];
+    })
+    .sort(function (a, b) {
+      return b.correct - a.correct || a.name.localeCompare(b.name);
+    });
+}
+
+/** エディタから手動実行する。正解数のランキングを実行ログに出す（景品の順位決め用。このログはエディタでしか見えない）。 */
+function logRanking() {
+  const ranking = rankQuiz_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME), readGate_().windows, readAnswerKey_());
+  ranking.forEach(function (entry, i) {
+    Logger.log(i + 1 + ". " + entry.name + "  正解 " + entry.correct + " / 回答 " + entry.answered);
+  });
+  if (ranking.length === 0) Logger.log("受付時間内の回答がありません");
 }
 
 /* ===================== 小さな部品 ===================== */
@@ -257,9 +338,20 @@ function findColumn_(header, keyword) {
   });
 }
 
-function findTimestampColumn_(header) {
-  return header.findIndex(function (text) {
+/** タイムスタンプの列。無いと受付時間内の回答かどうかを判定できないので、エラーにする。 */
+function requireTimestampColumn_(header) {
+  const col = header.findIndex(function (text) {
     return text.indexOf("タイムスタンプ") >= 0 || text.toLowerCase().indexOf("timestamp") >= 0;
+  });
+  if (col < 0) throw new Error("見出しに「タイムスタンプ」の列がありません（受付時間内の回答か判定できません）");
+  return col;
+}
+
+/** その時刻が、受付時間 [[開けた時刻, 閉じた時刻 | null], …] のどれかに入っているか。時刻が不明な行は入っていない扱い。 */
+function inWindows_(ts, list) {
+  if (isNaN(ts) || !list) return false;
+  return list.some(function (w) {
+    return ts >= w[0] - WINDOW_EARLY_MS && (w[1] === null || ts <= w[1] + WINDOW_GRACE_MS);
   });
 }
 
@@ -293,6 +385,244 @@ function countValues_(latestByWho, choices) {
   return counts;
 }
 
+/* ===================== 受付状態（?action=state / setOpen / reset） ===================== */
+
+/*
+ * 受付状態の本体（スクリプト プロパティ WG_GATE）:
+ *   { open, lastClosed, rev, updatedAt, windows: { "q5": [[開けた時刻ms, 閉じた時刻ms | null], …], "pred": […] } }
+ * 公開する形（publicState_）:
+ *   open       … いま回答を受け付けている対象（"q1"〜"q10" / "pred"）。無ければ null
+ *   lastClosed … 直前に締め切った対象。ゲストの画面に「締め切りました」と出す。待ち受けに戻すと null
+ *   done       … 一度でも受付を開けて、いまは閉じている対象の一覧（司会画面が「締め切り済み」と分かるように）
+ *   rev        … 状態が変わるたびに 1 増える番号
+ * 受付時間の時刻そのものは公開しない。
+ */
+
+function isTarget_(target) {
+  return target === "pred" || /^q([1-9]|10)$/.test(target);
+}
+
+function emptyGate_() {
+  return { open: null, lastClosed: null, rev: 0, updatedAt: null, windows: {} };
+}
+
+function readGate_() {
+  const gate = emptyGate_();
+  let saved = null;
+  try {
+    saved = JSON.parse(PropertiesService.getScriptProperties().getProperty(GATE_PROP) || "null");
+  } catch (err) {
+    saved = null; // 読めない・壊れているときは「何も受け付けていない」として扱う
+  }
+  if (!saved || typeof saved !== "object") return gate;
+  if (isTarget_(saved.open)) gate.open = saved.open;
+  if (isTarget_(saved.lastClosed)) gate.lastClosed = saved.lastClosed;
+  gate.rev = Number(saved.rev) || 0;
+  gate.updatedAt = typeof saved.updatedAt === "string" ? saved.updatedAt : null;
+  const windows = saved.windows && typeof saved.windows === "object" ? saved.windows : {};
+  Object.keys(windows).forEach(function (target) {
+    if (!isTarget_(target) || !Array.isArray(windows[target])) return;
+    gate.windows[target] = windows[target]
+      .filter(function (w) {
+        return Array.isArray(w) && typeof w[0] === "number";
+      })
+      .map(function (w) {
+        return [w[0], typeof w[1] === "number" ? w[1] : null];
+      });
+  });
+  return gate;
+}
+
+function publicState_(gate) {
+  const done = Object.keys(gate.windows).filter(function (target) {
+    return target !== gate.open && gate.windows[target].length > 0;
+  });
+  return { open: gate.open, lastClosed: gate.lastClosed, done: done, rev: gate.rev, updatedAt: gate.updatedAt };
+}
+
+function getPublicStateJson_() {
+  const cache = scriptCache_();
+  if (cache) {
+    try {
+      const hit = cache.get(GATE_CACHE_KEY);
+      if (hit) return hit;
+    } catch (err) {
+      /* 読めなければプロパティから作る */
+    }
+  }
+  const json = JSON.stringify(publicState_(readGate_()));
+  if (cache) {
+    try {
+      cache.put(GATE_CACHE_KEY, json, GATE_CACHE_SECONDS);
+    } catch (err) {
+      /* 保存できなくても続行する */
+    }
+  }
+  return json;
+}
+
+/** 受付状態を保存し、キャッシュ（公開用の写しと集計）を新しくする。 */
+function writeGate_(gate) {
+  gate.rev += 1;
+  gate.updatedAt = new Date().toISOString();
+  PropertiesService.getScriptProperties().setProperty(GATE_PROP, JSON.stringify(gate));
+  const cache = scriptCache_();
+  if (!cache) return;
+  try {
+    cache.remove(CACHE_KEY);
+    cache.put(GATE_CACHE_KEY, JSON.stringify(publicState_(gate)), GATE_CACHE_SECONDS);
+  } catch (err) {
+    try {
+      cache.remove(GATE_CACHE_KEY); // 古い写しが残らないようにする
+    } catch (err2) {
+      /* どちらもできなければ、写しは GATE_CACHE_SECONDS 後に消える */
+    }
+  }
+}
+
+/** 同時に2つの切り替えが来ても記録が壊れないよう、1つずつ処理する。 */
+function withLock_(fn) {
+  let lock = null;
+  try {
+    lock = LockService.getScriptLock();
+    lock.waitLock(5000);
+  } catch (err) {
+    lock = null; // ロックを取れなくても切り替えは行う（司会画面は1つだけの想定）
+  }
+  try {
+    return fn();
+  } finally {
+    if (lock) {
+      try {
+        lock.releaseLock();
+      } catch (err) {
+        /* 何もしない */
+      }
+    }
+  }
+}
+
+/**
+ * 受付を切り替える。
+ *   "q1"〜"q10" / "pred" … その対象の受付を開ける（ほかに開いているものは閉じる）
+ *   "none"              … 開いている受付を閉じる（ゲストには「締め切りました」と出る）
+ *   "idle"              … 閉じたうえで、「締め切りました」も消して待ち受けに戻す
+ * すでにその状態なら何も変えない（同じ呼び出しを繰り返しても、受付時間は増えない）。
+ */
+function setOpen_(target) {
+  return withLock_(function () {
+    const gate = readGate_();
+    const now = Date.now();
+    const wanted = isTarget_(target) ? target : null;
+    let changed = false;
+
+    if (gate.open && gate.open !== wanted) {
+      const list = gate.windows[gate.open] || [];
+      if (list.length > 0 && list[list.length - 1][1] === null) list[list.length - 1][1] = now;
+      gate.lastClosed = gate.open;
+      gate.open = null;
+      changed = true;
+    }
+    if (wanted && gate.open !== wanted) {
+      const list = (gate.windows[wanted] = gate.windows[wanted] || []);
+      list.push([now, null]);
+      if (list.length > MAX_WINDOWS) list.splice(0, 2, [list[0][0], list[1][1]]);
+      gate.open = wanted;
+      gate.lastClosed = null;
+      changed = true;
+    }
+    if (target === "idle" && gate.lastClosed) {
+      gate.lastClosed = null;
+      changed = true;
+    }
+    if (changed) writeGate_(gate);
+    return gate;
+  });
+}
+
+function handleSetOpen_(params) {
+  const denied = authorize_(params);
+  if (denied) return denied;
+  const target = String(params.target || "");
+  if (!isTarget_(target) && target !== "none" && target !== "idle") {
+    return { error: "bad_target", message: "target は q1〜q10 / pred / none / idle のどれかです" };
+  }
+  return { ok: true, state: publicState_(setOpen_(target)) };
+}
+
+/** 受付の記録（開けた・閉じた時刻）をすべて消す。リハーサルの回答を本番で数えないようにするため。 */
+function resetGate_() {
+  return withLock_(function () {
+    const gate = emptyGate_();
+    gate.rev = readGate_().rev; // 番号は戻さない（司会画面が古い状態と取り違えないように）
+    writeGate_(gate);
+    return gate;
+  });
+}
+
+function handleReset_(params) {
+  const denied = authorize_(params);
+  if (denied) return denied;
+  return { ok: true, state: publicState_(resetGate_()) };
+}
+
+/** エディタから手動実行する。リハーサルのあと、本番の前に1回実行する（シートの回答は消えない。数えなくなるだけ）。 */
+function resetGame() {
+  Logger.log("受付の記録を消しました: " + JSON.stringify(publicState_(resetGate_())));
+}
+
+/* ===================== 司会キーの確認 ===================== */
+
+/** 司会キーが合っていれば null、合っていなければ返すべきエラーを返す。 */
+function authorize_(params) {
+  let hostKey = "";
+  try {
+    hostKey = String(PropertiesService.getScriptProperties().getProperty(PROP_HOST_KEY) || "").trim();
+  } catch (err) {
+    return { error: "not_configured", message: "スクリプト プロパティを読めません" };
+  }
+  // キーが未設定・短すぎるときは、誰にも返さない（空のキーで通ってしまわないように）
+  if (hostKey.length < HOST_KEY_MIN_LENGTH) {
+    return { error: "not_configured", message: "スクリプト プロパティ " + PROP_HOST_KEY + " が未設定か、" + HOST_KEY_MIN_LENGTH + "文字未満です" };
+  }
+  if (!keyMatches_(params.key, hostKey)) return { error: "unauthorized", message: "司会キーが違います" };
+  return null;
+}
+
+/* ===================== 正解（?action=answers&key=司会キー） ===================== */
+
+/** 「正解」タブを読む。問題番号 → "A"〜"D"。A列に 1〜10 の数字がない行（見出しなど）は飛ばす。 */
+function readAnswerKey_() {
+  const answers = {};
+  readRows_(QUIZ_SPREADSHEET_ID, ANSWER_SHEET_NAME).forEach(function (row) {
+    const m = /^\D*(\d{1,2})\D*$/.exec(normalize_(row[0]));
+    const value = normalize_(row[1]).toUpperCase();
+    const no = m ? Number(m[1]) : 0;
+    if (no >= 1 && no <= QUESTION_COUNT && QUIZ_CHOICES.indexOf(value) >= 0 && !(no in answers)) answers[no] = value;
+  });
+  return answers;
+}
+
+/** 司会画面の正解発表用。司会キーが合うときだけ返す。キャッシュには置かない。 */
+function buildAnswersResponse_(params) {
+  const denied = authorize_(params);
+  if (denied) return denied;
+  let answers;
+  try {
+    answers = readAnswerKey_();
+  } catch (err) {
+    return { error: "answers_error", message: "正解を読めません: " + err.message };
+  }
+  const missing = [];
+  for (let no = 1; no <= QUESTION_COUNT; no++) if (!(no in answers)) missing.push(no);
+  return { updatedAt: new Date().toISOString(), answers: answers, missing: missing };
+}
+
+/** エディタから手動実行して、「正解」タブを読めることを確かめる（このログはエディタでしか見えない）。 */
+function testAnswers() {
+  Logger.log(JSON.stringify(readAnswerKey_()));
+}
+
 /* ===================== スライド一覧（?action=slides&key=司会キー） ===================== */
 
 /*
@@ -302,16 +632,16 @@ function countValues_(latestByWho, choices) {
  *     "updatedAt": "…",
  *     "slides": [
  *       { "objectId": "p",   "kind": "slide",      "imageUrl": "https://lh7-…googleusercontent.com/…" },
- *       { "objectId": "g12", "kind": "quizCounts", "imageUrl": null, "question": 5 },
- *       { "objectId": "g34", "kind": "predCounts", "imageUrl": null }
+ *       { "objectId": "g12", "kind": "question",   "imageUrl": "https://…", "question": 5 },
+ *       { "objectId": "g34", "kind": "prediction", "imageUrl": "https://…" }
  *     ],
  *     "pending": 0            // まだ画像を作れていない枚数。0 より大きければ、少し待ってもう一度呼ぶ
  *   }
  *   失敗時は { "error": "unauthorized" | "not_configured" | "deck_error", "message": "…" }
  *
  * kind の決め方（スライド上の文字で判定する。ページ番号や並び順には依存しない）:
- *   quizCounts … 「第N問 回答数」のスライド。司会画面は画像の代わりに第N問の回答数グラフを映す
- *   predCounts … 「予想 回答数」のスライド。以心伝心ゲーム予想の回答数グラフを映す
+ *   question   … 第N問のスライド。司会画面は、このスライドを映している間だけ第N問の回答を受け付ける
+ *   prediction … 以心伝心ゲーム予想を尋ねるスライド。映している間だけ予想を受け付ける
  *   slide      … それ以外。スライドの画像をそのまま映す
  *   詳しい条件は classifySlideTexts_ を参照。
  *
@@ -326,20 +656,9 @@ function countValues_(latestByWho, choices) {
  *   refresh=objectId,…     指定したスライドの画像だけ作り直す（画像の URL が切れて読めなかったとき）
  */
 function buildSlidesResponse_(params) {
-  let hostKey = "";
-  let deckId = "";
-  try {
-    const props = PropertiesService.getScriptProperties();
-    hostKey = String(props.getProperty(PROP_HOST_KEY) || "").trim();
-    deckId = String(props.getProperty(PROP_DECK_ID) || "").trim();
-  } catch (err) {
-    return { error: "not_configured", message: "スクリプト プロパティを読めません" };
-  }
-  // キーが未設定・短すぎるときは、誰にも返さない（空のキーで通ってしまわないように）
-  if (hostKey.length < HOST_KEY_MIN_LENGTH) {
-    return { error: "not_configured", message: "スクリプト プロパティ " + PROP_HOST_KEY + " が未設定か、" + HOST_KEY_MIN_LENGTH + "文字未満です" };
-  }
-  if (!keyMatches_(params.key, hostKey)) return { error: "unauthorized", message: "司会キーが違います" };
+  const denied = authorize_(params);
+  if (denied) return denied;
+  const deckId = String(PropertiesService.getScriptProperties().getProperty(PROP_DECK_ID) || "").trim();
   if (!deckId) return { error: "not_configured", message: "スクリプト プロパティ " + PROP_DECK_ID + " が未設定です" };
 
   const refresh = String(params.refresh || "");
@@ -405,11 +724,19 @@ function getSlideList_(deckId, skipCache) {
 
 function readSlideList_(deckId) {
   const list = [];
+  const seen = {}; // 同じ問題番号・予想のスライドが2枚あったら、最初の1枚だけを受付のスライドにする
   SlidesApp.openById(deckId).getSlides().forEach(function (slide) {
     if (isSkipped_(slide)) return;
     const found = classifySlideTexts_(collectSlideTexts_(slide));
+    if (found.kind === "legacy") return; // 以前の「回答数」スライドは映さない
     const item = { objectId: slide.getObjectId(), kind: found.kind };
-    if (found.kind === "quizCounts") item.question = found.question;
+    if (found.kind === "question") item.question = found.question;
+    const id = found.kind === "question" ? "q" + found.question : found.kind;
+    if (found.kind !== "slide" && seen[id]) {
+      item.kind = "slide";
+      delete item.question;
+    }
+    seen[id] = true;
     list.push(item);
   });
   return list;
@@ -464,69 +791,67 @@ function normalizeMarker_(text) {
   return String(text === null || text === undefined ? "" : text).normalize("NFKC").toUpperCase().replace(/\s+/g, "");
 }
 
-// 「第5問 回答」「第5問の回答」「Q5 回答」「Q5：回答」など（空白は取り除いたあとで照合する）
-const QUIZ_MARKER_RE = /(?:第(\d{1,2})問目?|Q\.?(\d{1,2}))[-‐–—―:・|\/]*の?回答/;
-// スライド上の問題番号の書き方すべて（「第5問」「Q5」）
-const QUESTION_MENTION_RE = /第(\d{1,2})問|Q\.?(\d{1,2})(?!\d)/g;
+// 問題のスライドの題名。1つのテキストボックスが、これだけでできている（空白は取り除いたあとで照合する）
+// 「第5問」「第5問目」「Q5」「Q.5」「QUESTION 5」。末尾の「.」「:」「。」は付いていてもよい
+const QUESTION_TITLE_RE = /^(?:第(\d{1,2})問目?|Q(?:UESTION)?\.?(\d{1,2}))[.:。]?$/;
+// 予想のスライドの題名。1つのテキストボックスが、これだけでできている。「予想タイム」「予想」「以心伝心ゲーム予想」など
+const PRED_TITLE_RE = /^(?:以心伝心(?:ゲーム)?の?)?予想(?:タイム|クイズ)?[!.:。]?$/;
+// 予想の質問文そのもの。スライドのどこかにあればよい。「…5問中何問そろいますか？」「何問揃う？」
+const PRED_QUESTION_RE = /何問(?:そろ|揃)/;
+// 以前の「第N問 回答数」スライドの題名（いまは使わないので、スライドショーから外す）
+const LEGACY_COUNTS_RE = /(?:第\d{1,2}問目?|Q\.?\d{1,2})[-‐–—―:・|\/]*の?回答/;
 
 /**
  * スライドの種類を、スライド上の文字（テキストボックス・表のセルごとの配列）から決める。
- * 文字は normalizeMarker_ でならしてから比べるので、全角数字（第５問）や空白・改行の有無は問わない。
+ * 文字は normalizeMarker_ でならしてから比べるので、全角/半角・大文字/小文字・空白や改行の有無は問わない。
  *
- * 1. quizCounts: スライドのどこかに「回答数」があり、かつ1つのテキストボックスの中に
- *    「第N問 回答」または「QN 回答」（N は 1〜10）がある。例: 「第5問 回答数」「Q5 回答数」「第5問の回答数」
- * 2. predCounts: スライドのどこかに「回答数」と「予想」がある。例: 「予想 回答数」「以心伝心ゲーム予想 回答数」
- * 3. quizCounts（ゆるい条件）: スライドのどこかに「回答数」があり、「正解」がなく、
- *    問題番号（第N問 / QN）がちょうど1種類だけ書かれている。例: 「Q5」と「回答数」が別のテキストボックス
+ * 1. question: 「第N問」または「QN」（N は 1〜10）だけが書かれたテキストボックスがある。
+ *    例: 題名の箱に「Q5」「第5問」。「第5問 正解」「第5問 回答数」「Q5 解説」のように続きがある箱は当てはまらない。
+ *    違う番号の題名が2つ以上あるスライドは、どの問題か決められないので slide にする。
+ * 2. prediction: 「予想タイム」（または「予想」「以心伝心ゲーム予想」）だけが書かれたテキストボックスがある、
+ *    またはスライドのどこかに「何問そろ」（何問揃）がある。例: 「新郎新婦の答えは5問中何問そろいますか？」
+ * 3. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
  * 4. それ以外は slide。
- *
- * 「第5問 正解」「Q5（問題）」のスライドには「回答数」がないので slide になる。
  */
 function classifySlideTexts_(texts) {
   const boxes = (texts || []).map(normalizeMarker_).filter(String);
   const whole = boxes.join("\n");
-  if (whole.indexOf("回答数") < 0) return { kind: "slide" };
 
-  for (let i = 0; i < boxes.length; i++) {
-    const m = QUIZ_MARKER_RE.exec(boxes[i]);
+  const numbers = {};
+  boxes.forEach(function (box) {
+    const m = QUESTION_TITLE_RE.exec(box);
     const no = m ? Number(m[1] || m[2]) : 0;
-    if (no >= 1 && no <= QUESTION_COUNT) return { kind: "quizCounts", question: no };
-  }
+    if (no >= 1 && no <= QUESTION_COUNT) numbers[no] = true;
+  });
+  const found = Object.keys(numbers);
+  if (found.length === 1) return { kind: "question", question: Number(found[0]) };
+  if (found.length > 1) return { kind: "slide" };
 
-  if (whole.indexOf("予想") >= 0) return { kind: "predCounts" };
+  const isPredTitle = function (box) {
+    return PRED_TITLE_RE.test(box);
+  };
+  if (boxes.some(isPredTitle) || PRED_QUESTION_RE.test(whole)) return { kind: "prediction" };
 
-  if (whole.indexOf("正解") < 0) {
-    const mentioned = {};
-    boxes.forEach(function (box) {
-      let m;
-      QUESTION_MENTION_RE.lastIndex = 0;
-      while ((m = QUESTION_MENTION_RE.exec(box)) !== null) {
-        const no = Number(m[1] || m[2]);
-        if (no >= 1 && no <= QUESTION_COUNT) mentioned[no] = true;
-      }
-    });
-    const numbers = Object.keys(mentioned);
-    if (numbers.length === 1) return { kind: "quizCounts", question: Number(numbers[0]) };
-  }
+  const isLegacyTitle = function (box) {
+    return LEGACY_COUNTS_RE.test(box);
+  };
+  if (whole.indexOf("回答数") >= 0 && (boxes.some(isLegacyTitle) || whole.indexOf("予想") >= 0)) return { kind: "legacy" };
   return { kind: "slide" };
 }
 
 /**
- * 画像を映すスライド（kind: "slide"）に imageUrl を付ける。グラフのスライドは画像を使わないので作らない。
- * URL はキャッシュし、無いものだけ Slides API で作る。時間の上限を超えたら残りは null（pending）で返す。
+ * スライドに imageUrl を付ける。URL はキャッシュし、無いものだけ Slides API で作る。
+ * 時間の上限を超えたら残りは null（pending）で返す。
  */
 function attachThumbnails_(deckId, list, refreshAll, refreshIds) {
   const cache = scriptCache_();
   const keyOf = function (item) {
     return THUMB_CACHE_PREFIX + item.objectId;
   };
-  const imageItems = list.filter(function (item) {
-    return item.kind === "slide";
-  });
   let cached = {};
-  if (cache && !refreshAll && imageItems.length > 0) {
+  if (cache && !refreshAll && list.length > 0) {
     try {
-      cached = cache.getAll(imageItems.map(keyOf)) || {};
+      cached = cache.getAll(list.map(keyOf)) || {};
     } catch (err) {
       cached = {};
     }
@@ -540,8 +865,7 @@ function attachThumbnails_(deckId, list, refreshAll, refreshIds) {
 
   const slides = list.map(function (item) {
     const out = { objectId: item.objectId, kind: item.kind, imageUrl: null };
-    if (item.kind === "quizCounts") out.question = item.question;
-    if (item.kind !== "slide") return out;
+    if (item.kind === "question") out.question = item.question;
 
     let url = refreshIds.indexOf(item.objectId) >= 0 ? "" : cached[keyOf(item)] || "";
     if (!url && !stopped) {
@@ -607,6 +931,8 @@ function setupHostKey() {
 /**
  * 権限の承認と、スライドの種類の判定結果の確認をするための関数。
  * 実行ログに「ページ番号: 種類 | スライド上の文字の先頭」を出す（このログはエディタでしか見えない）。
+ * 第1問〜第10問がそれぞれ question、予想のスライドが prediction になっていることを確かめる
+ * （同じ番号が2枚あるときは、最初の1枚だけが受付のスライドになる）。
  * 最後に画像を1枚だけ作って、Slides API が使えることを確かめる。
  */
 function testSlides() {
@@ -622,7 +948,7 @@ function testSlides() {
     const texts = collectSlideTexts_(slide);
     const found = classifySlideTexts_(texts);
     const skipped = isSkipped_(slide);
-    const label = found.kind === "quizCounts" ? "quizCounts 第" + found.question + "問" : found.kind;
+    const label = found.kind === "question" ? "question 第" + found.question + "問" : found.kind === "legacy" ? "（以前の回答数スライド・映さない）" : found.kind;
     const head = texts
       .map(function (t) {
         return String(t).replace(/\s+/g, " ").trim();

@@ -62,23 +62,12 @@ input[type="text"]{
 .fallback a{ color:var(--gold-light); }
 .done-mark{ font-size:52px; text-align:center; color:var(--gold); margin:10px 0 4px; }
 .hidden{ display:none !important; }
-.summary{ font-size:15px; line-height:2; margin:0 0 6px; }
-.summary b{ color:var(--gold-light); font-weight:600; }
 .who{ text-align:center; font-size:14px; color:var(--gold-light); margin-bottom:16px; }
 
-/* ---- 以下はリファクタ時に追加（問題番号ナビ・送信済みロック・送信エラー表示） ---- */
+/* ---- 送信済みロック・送信エラー表示 ---- */
 .ghost:disabled{ opacity:.45; cursor:default; }
 button.choice:disabled{ cursor:default; opacity:.5; }
 button.choice.selected:disabled{ opacity:1; }
-.qnav{ display:grid; grid-template-columns:repeat(5, 40px); justify-content:center; gap:8px; margin:0 0 18px; }
-.qnav button{
-  appearance:none; cursor:pointer; padding:0; height:40px; border-radius:50%;
-  border:1px solid rgba(201,162,39,.55); background:none; color:var(--gold-light);
-  font-family:inherit; font-size:15px;
-}
-.qnav button.sent{ background:var(--gold); border-color:var(--gold); color:#fff; }
-.qnav button.current{ box-shadow:0 0 0 2px var(--paper); }
-.qnav button:disabled{ cursor:default; }
 .error{
   font-size:14px; line-height:1.7; text-align:center; color:#ffd9cc;
   border:1px solid rgba(255,170,140,.6); border-radius:10px;
@@ -89,3 +78,15 @@ button.choice.selected:disabled{ opacity:1; }
 /* ---- 4択クイズ: 選択肢を 2×2 に並べる（config.js の choiceColumns: 2） ---- */
 .choices.cols-2{ display:grid; grid-template-columns:1fr 1fr; }
 .choices.cols-2 button.choice{ font-size:26px; padding:24px 10px; }
+
+/* ---- 受付状態に合わせた表示（お待ちください・締め切りました・通信の案内） ---- */
+.live-note{ font-size:15px; margin-top:20px; }
+#screen-live[data-mode="waiting"] .qtext,
+#screen-live[data-mode="closed"] .qtext,
+#screen-live[data-mode="connecting"] .qtext{ font-size:24px; margin:26px 0 10px; }
+#screen-live[data-mode="closed"] .qtext{ color:var(--gold-light); }
+#screen-live[data-mode="waiting"] .progress,
+#screen-live[data-mode="connecting"] .progress{ font-size:30px; color:var(--gold); animation:wait-pulse 2s ease-in-out infinite; }
+@keyframes wait-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
+.notice{ font-size:13px; line-height:1.7; text-align:center; color:#ffd9cc; margin:18px 0 0; }
+.demo-badge{ font-size:12px; color:var(--gold-light); border:1px solid var(--gold-light); border-radius:14px; padding:4px 12px; margin-top:18px; }

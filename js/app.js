@@ -1,58 +1,77 @@
 /*
- * 画面と状態の管理。
+ * 回答ページの画面と状態の管理。
  *
  * 画面の流れ:
- *   name → menu → question（1問ごとに「選ぶ → 送信する」）→ 全問送信で done → menu
+ *   name（名前入力）→ live（司会画面がいま受け付けている問題だけが自動で出る）
  *
- * クイズも予想も「セクション」（config.js の SECTIONS の1要素）として同じコードで動く。
- * 予想は「1問だけのセクション」という扱い。
+ * live の表示は、Apps Script から2〜3秒ごとに読む受付状態（js/gate.js）で決まる。
+ *   question   … 受付中の問題。「選ぶ → 送信する」で1回だけ送れる（送信済みならロック表示）
+ *   closed     … 直前の問題が締め切られた（「締め切りました」）
+ *   waiting    … 何も受け付けていない（「次の問題をお待ちください」）
+ *   connecting … 受付状態が分からない（まだ読めていない / しばらく読めていない）。回答ボタンは出さない
+ * ゲストが自分で問題を選ぶことはできない。クイズも予想も、config.js の SECTIONS の定義で同じコードが動く。
  *
- * 回答は1問ごとに送信し、送信できた問題はロックする（送り直しはできない）。
- * 問題はスライドで1問ずつ出るので、全問そろうのを待たずにその場で送るため。
+ * 受付状態を読めなくなったとき:
+ *   - GATE.staleMs までは、最後に読めた状態のまま動かす（一瞬の電波切れで回答を止めない）
+ *   - それを過ぎたら connecting にして回答ボタンを隠す（締め切られたことに気づかず答えてしまわないように）
+ *   - ページ下のフォームへのリンクは常に出しておく
+ * 締め切りを最終的に守るのは Apps Script 側（受付時間外に届いた回答は人数に数えない）。
+ *
+ * ?demo=1 を付けると、同じブラウザで開いた host.html?demo=1 の受付状態で動く（回答は送信しない）。
  */
-import { SECTIONS, SUBMIT } from "./config.js";
+import { SECTIONS, SUBMIT, GATE, HOST } from "./config.js";
 import { submitAnswer } from "./submit.js";
 import { loadName, saveName, loadSent, saveSent } from "./storage.js";
+import { fetchGate, parseTarget, readDemoGate } from "./gate.js";
 
 const $ = (id) => document.getElementById(id);
 
-const SCREENS = ["name", "menu", "question", "done"];
+const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+
+/** 受付状態の取得方法。null なら未設定（Apps Script の URL がない）。 */
+const loadGate = DEMO
+  ? async () => readDemoGate()
+  : HOST.statsUrl
+    ? () => fetchGate(HOST.statsUrl, { timeoutMs: GATE.timeoutMs, transport: HOST.transport })
+    : null;
+
+/** 回答の送信。デモでは Google フォームへ送らず、少し待って成功したことにする。 */
+const send = DEMO
+  ? () => new Promise((resolve) => setTimeout(resolve, 400))
+  : (section, index, answer) => submitAnswer(section.form, state.name, index, answer, SUBMIT);
 
 const state = {
   name: "",
-  sent: {},        // セクションid → { 問題番号: 送信した回答 }。送信済み＝ロック。localStorage にも保存
-  drafts: {},      // セクションid → { 問題番号: 選んだだけでまだ送っていない回答 }
-  section: null,   // いま回答中のセクション（SECTIONS の要素）
-  index: 0,        // セクション内の何問目か（0始まり）
-  submitting: false,
+  started: false,     // 名前を入れて live 画面に進んだか
+  sent: {},           // セクションid → { 問題番号(0始まり): 送信した回答 }。送信済み＝ロック。localStorage にも保存
+  drafts: {},         // 対象（"q5" など）→ 選んだだけでまだ送っていない回答
+  sending: new Set(), // 送信中の対象
+  failed: new Set(),  // 送信に失敗した対象（「もう一度送信する」を出す）
+  gate: null,         // 最後に読めた受付状態
+  gateAt: 0,          // それを読めた時刻
+  failures: 0,        // 受付状態の取得に続けて失敗した回数
 };
 
 /* ===== 状態の読み取り ===== */
-const questionCount = (section) => section.form.answerEntries.length;
+
 // 保存データは外から書き換えられうるので、選択肢にある値だけを「送信済み」と認める
-const sentAnswer = (section, index) => {
+function sentAnswer(section, index) {
   const answer = (state.sent[section.id] || {})[index];
   return section.choices.includes(answer) ? answer : null;
-};
-const isSent = (section, index) => sentAnswer(section, index) !== null;
-const sentCount = (section) =>
-  Array.from({ length: questionCount(section) }, (_, i) => i).filter((i) => isSent(section, i)).length;
-
-/** from の次から順に（末尾まで行ったら先頭に戻って）未送信の問題を探す。無ければ -1。 */
-function nextUnsent(section, from) {
-  const total = questionCount(section);
-  for (let step = 1; step <= total; step++) {
-    const i = (from + step) % total;
-    if (!isSent(section, i)) return i;
-  }
-  return -1;
 }
 
-/* ===== 表示の部品 ===== */
-function show(screen) {
-  SCREENS.forEach((s) => $("screen-" + s).classList.toggle("hidden", s !== screen));
-  window.scrollTo(0, 0);
+/** いま出すべき表示。{ mode, target?, section?, index? } */
+function currentView() {
+  const fresh = state.gate && Date.now() - state.gateAt < GATE.staleMs;
+  if (!fresh) return { mode: "connecting" };
+  const open = parseTarget(state.gate.open);
+  if (open) return { mode: "question", ...open };
+  const closed = parseTarget(state.gate.lastClosed);
+  if (closed) return { mode: "closed", ...closed };
+  return { mode: "waiting" };
 }
+
+/* ===== 表示 ===== */
 
 /** 文字列の配列を <br> 区切りで要素に入れる（innerHTML を使わないため）。 */
 function setLines(el, lines) {
@@ -63,54 +82,124 @@ function setLines(el, lines) {
   });
 }
 
-function choiceButton(label, selected, onClick) {
-  const b = document.createElement("button");
-  b.className = "choice" + (selected ? " selected" : "");
-  b.textContent = label;
-  b.addEventListener("click", onClick);
-  return b;
+let lastSignature = "";
+
+/** live 画面を、いまの状態に合わせる。見た目が変わらないときは作り直さない（押している途中のボタンを消さないため）。 */
+function render() {
+  if (!state.started) return;
+  const view = currentView();
+  const { mode, target, section, index } = view;
+  const sent = section ? sentAnswer(section, index) : null;
+  const draft = target ? state.drafts[target] || null : null;
+  const sending = state.sending.has(target);
+  const failed = mode === "question" && !sent && state.failed.has(target);
+  const trouble = !loadGate || state.failures >= (mode === "connecting" ? 1 : 2);
+
+  const signature = JSON.stringify([mode, target, sent, draft, sending, failed, trouble]);
+  if (signature === lastSignature) return;
+  lastSignature = signature;
+
+  const answering = mode === "question" && !sent;
+  let prompt;
+  let note = [];
+  if (mode === "question") {
+    prompt = sent ? [section.answerLabel(index) + "は", "送信済みです"] : section.promptLines;
+    if (sent) note = ["締め切りまで、そのままお待ちください"];
+  } else if (mode === "closed") {
+    prompt = [section.answerLabel(index) + "は", "締め切りました"];
+    note = sent ? ["あなたの回答: " + sent, "次の問題をお待ちください"] : ["次の問題をお待ちください"];
+  } else if (mode === "waiting") {
+    prompt = ["次の問題を", "お待ちください"];
+    note = ["スクリーンに問題が出ると、", "ここに回答ボタンが出ます"];
+  } else {
+    prompt = ["接続しています…"];
+    note = ["そのままお待ちください"];
+  }
+
+  $("screen-live").dataset.mode = mode;
+  $("live-kicker").textContent = section ? section.progressLabel(index, section.form.answerEntries.length) : "✦";
+  setLines($("live-prompt"), prompt);
+  setLines($("live-note"), note);
+  $("live-note").classList.toggle("hidden", note.length === 0);
+
+  // 選択肢は受付中だけ出す。送信済みの問題は、送った回答を表示したまま押せなくする
+  const choices = $("live-choices");
+  choices.classList.toggle("hidden", mode !== "question");
+  choices.classList.toggle("cols-2", Boolean(section) && section.choiceColumns === 2);
+  choices.replaceChildren(
+    ...(mode === "question" ? section.choices : []).map((choice) => {
+      const b = document.createElement("button");
+      b.className = "choice" + ((sent || draft) === choice ? " selected" : "");
+      b.textContent = choice;
+      b.disabled = Boolean(sent) || sending;
+      b.addEventListener("click", () => {
+        state.drafts[target] = choice;
+        render();
+      });
+      return b;
+    })
+  );
+
+  $("btn-submit").classList.toggle("hidden", !answering);
+  $("btn-submit").disabled = !draft || sending;
+  $("btn-submit").textContent = sending ? "送信中…" : failed ? "もう一度送信する" : "送信する";
+  $("submit-error").classList.toggle("hidden", !failed || sending);
+  if (section) $("submit-error-link").href = section.fallback.url;
+  $("live-notice").classList.toggle("hidden", !trouble);
 }
 
-/* ===== 名前 ===== */
-function initNameScreen() {
-  state.name = loadName();
-  $("guest-name").value = state.name;
-  $("btn-start").disabled = state.name.length === 0;
+/* ===== 送信 ===== */
 
-  $("guest-name").addEventListener("input", (e) => {
-    state.name = e.target.value.trim();
-    $("btn-start").disabled = state.name.length === 0;
-  });
-  $("btn-start").addEventListener("click", () => {
-    saveName(state.name);
-    state.sent = loadSent(state.name); // 送信済み（ロック）は名前ごとに覚えている
-    state.drafts = {};
-    renderMenu();
-  });
+async function handleSubmit() {
+  const { mode, target, section, index } = currentView();
+  if (mode !== "question") return; // 押す直前に締め切られた
+  const answer = state.drafts[target];
+  if (!answer || sentAnswer(section, index) || state.sending.has(target)) return; // 二重送信防止
+
+  state.sending.add(target);
+  state.failed.delete(target);
+  render();
+  try {
+    await send(section, index, answer);
+    // 送信できた問題をロックして保存する（締め切り間際に送った分を数えるかどうかは Apps Script が決める）
+    state.sent[section.id] = { ...state.sent[section.id], [index]: answer };
+    if (!DEMO) saveSent(state.name, state.sent);
+  } catch (e) {
+    // タイムアウトのように「実は届いていた」可能性がある失敗も含む。その場合にもう一度送ると
+    // 同じ問題の行が2つできるが、集計は名前×問題ごとに最新の行だけを数える
+    state.failed.add(target);
+  } finally {
+    state.sending.delete(target);
+    render();
+  }
 }
 
-/* ===== メニュー ===== */
-function badgeText(section) {
-  const done = sentCount(section);
-  const total = questionCount(section);
-  if (done === 0) return "";
-  return done === total ? "　✓ 送信済み" : `　${done}/${total} 送信済み`;
+/* ===== 受付状態の定期取得 ===== */
+
+let pollTimer = null;
+let pollBusy = false;
+
+async function poll() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  if (pollBusy || !loadGate || document.hidden) return; // 画面を閉じている間は読まない（戻ったときに再開する）
+  pollBusy = true;
+  try {
+    state.gate = await loadGate();
+    state.gateAt = Date.now();
+    state.failures = 0;
+  } catch (e) {
+    state.failures += 1; // つながらない・Apps Script が古い など。間隔をあけて読み直す
+  } finally {
+    pollBusy = false;
+  }
+  render();
+  // 全員が同時に読まないよう、毎回すこしずらす。失敗が続くほど間隔をあける
+  const base = DEMO ? 600 : GATE.pollMs + Math.random() * GATE.jitterMs;
+  pollTimer = setTimeout(poll, Math.min(base * 2 ** Math.min(state.failures, 5), Math.max(GATE.maxBackoffMs, base)));
 }
 
-function renderMenu() {
-  $("menu-who").textContent = state.name + " さん";
-
-  const buttons = SECTIONS.map((section) => {
-    const b = choiceButton(section.menuLabel, false, () => startSection(section));
-    const badge = document.createElement("span");
-    badge.className = "done-badge";
-    badge.textContent = badgeText(section);
-    b.appendChild(badge);
-    return b;
-  });
-  $("menu-choices").replaceChildren(...buttons);
-  show("menu");
-}
+/* ===== 起動 ===== */
 
 function initFallbackLinks() {
   const box = $("fallback-links");
@@ -125,116 +214,34 @@ function initFallbackLinks() {
   });
 }
 
-/* ===== 質問 ===== */
-function startSection(section) {
-  state.section = section;
-  // 最初の未送信の問題から始める。全部送信済みなら第1問（ロック表示）を見せる
-  state.index = Math.max(nextUnsent(section, -1), 0);
-  renderQuestion();
+function start() {
+  if (!DEMO) saveName(state.name);
+  state.sent = DEMO ? {} : loadSent(state.name); // 送信済み（ロック）は名前ごとに覚えている
+  state.started = true;
+  $("live-who").textContent = state.name + " さん";
+  $("screen-name").classList.add("hidden");
+  $("screen-live").classList.remove("hidden");
+  $("fallback").classList.remove("hidden");
+  window.scrollTo(0, 0);
+  render();
+  poll();
 }
 
-function goToQuestion(index) {
-  state.index = index;
-  renderQuestion();
-}
-
-/** 問題番号のナビ（複数問あるセクションだけ）。送信済みの問題は色が付く。 */
-function renderQuestionNav(section, total) {
-  const nav = $("question-nav");
-  nav.classList.toggle("hidden", total <= 1);
-  nav.replaceChildren(
-    ...Array.from({ length: total }, (_, i) => {
-      const b = document.createElement("button");
-      b.textContent = String(i + 1);
-      b.className = [isSent(section, i) ? "sent" : "", i === state.index ? "current" : ""].join(" ").trim();
-      b.setAttribute("aria-label", section.answerLabel(i) + (isSent(section, i) ? "（送信済み）" : ""));
-      b.addEventListener("click", () => goToQuestion(i));
-      return b;
-    })
-  );
-}
-
-function renderQuestion() {
-  const { section, index } = state;
-  const total = questionCount(section);
-  const locked = isSent(section, index);
-  const drafts = (state.drafts[section.id] ||= {});
-  const current = locked ? sentAnswer(section, index) : drafts[index];
-
-  $("question-progress").textContent = section.progressLabel(index, total);
-  renderQuestionNav(section, total);
-  setLines($("question-prompt"), locked ? [section.answerLabel(index) + "は", "送信済みです"] : section.promptLines);
-
-  // 送信済みの問題は、送った回答を表示したまま選択肢を押せなくする
-  $("question-choices").classList.toggle("cols-2", section.choiceColumns === 2);
-  $("question-choices").replaceChildren(
-    ...section.choices.map((choice) => {
-      const b = choiceButton(choice, current === choice, () => {
-        drafts[index] = choice;
-        renderQuestion();
-      });
-      b.disabled = locked;
-      return b;
-    })
-  );
-
-  $("submit-error").classList.add("hidden");
-  $("submit-error-link").href = section.fallback.url;
-
-  $("btn-submit").classList.toggle("hidden", locked);
-  $("btn-submit").textContent = "送信する";
-  $("btn-submit").disabled = !current;
-
-  // 送信済みの問題では「送信する」の代わりに、次の未送信の問題へ進むボタンを出す
-  $("btn-next").classList.toggle("hidden", !locked || nextUnsent(section, index) === -1);
-  show("question");
-}
-
-/* ===== 送信 ===== */
-function setSubmitting(on) {
-  state.submitting = on;
-  // 送信中に別の問題へ移ったり回答を変えたりすると、送った内容と表示が食い違うので全部止める
-  $("screen-question").querySelectorAll("button").forEach((b) => (b.disabled = on));
-  if (on) $("btn-submit").textContent = "送信中…";
-}
-
-async function handleSubmit() {
-  if (state.submitting) return; // 二重送信防止（ボタンの disabled と二段構え）
-  const { section, index } = state;
-  const answer = (state.drafts[section.id] || {})[index];
-  if (!answer || isSent(section, index)) return;
-
-  setSubmitting(true);
-  $("submit-error").classList.add("hidden");
-  try {
-    await submitAnswer(section.form, state.name, index, answer, SUBMIT);
-  } catch (e) {
-    // タイムアウトのように「実は届いていた」可能性がある失敗も含む。その場合にもう一度送ると
-    // 同じ問題の行が2つできるので、集計では名前×問題ごとに最新の行を使ってもらう（README 参照）
-    setSubmitting(false);
-    $("btn-submit").textContent = "もう一度送信する";
-    $("submit-error").classList.remove("hidden");
-    return;
-  }
-  setSubmitting(false);
-
-  // 送信できた問題をロックして保存する
-  state.sent[section.id] = { ...state.sent[section.id], [index]: answer };
-  saveSent(state.name, state.sent);
-
-  if (nextUnsent(section, index) === -1) {
-    // このセクションは全問送信済み
-    $("done-note").textContent = section.doneMessage;
-    show("done");
-  } else {
-    renderQuestion(); // 同じ問題をロック表示にして「つぎの問題へ」を出す
-  }
-}
-
-/* ===== 起動 ===== */
-initNameScreen();
-initFallbackLinks();
-$("btn-question-back").addEventListener("click", renderMenu);
-$("btn-next").addEventListener("click", () => goToQuestion(nextUnsent(state.section, state.index)));
+state.name = loadName();
+$("guest-name").value = state.name;
+$("btn-start").disabled = state.name.length === 0;
+$("guest-name").addEventListener("input", (e) => {
+  state.name = e.target.value.trim();
+  $("btn-start").disabled = state.name.length === 0;
+});
+$("btn-start").addEventListener("click", start);
 $("btn-submit").addEventListener("click", handleSubmit);
-$("btn-to-menu").addEventListener("click", renderMenu);
+initFallbackLinks();
+if (DEMO) $("badge-demo").classList.remove("hidden");
+
+// 画面に戻ってきたら、すぐ読み直す（閉じている間に進んだ分を取り戻す）
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !state.started) return;
+  render();
+  poll();
+});

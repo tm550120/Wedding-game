@@ -1,8 +1,9 @@
 /*
  * 設定ファイル（幹事さんが編集するのは基本的にここだけ）
  *
- * SECTIONS の1要素が、メニューの1ボタン＝Googleフォーム1つに対応する。
- * 問題数は form.answerEntries の個数で決まる（1個なら1問だけの画面になる）。
+ * SECTIONS の1要素が、Googleフォーム1つに対応する（クイズ = "quiz"、以心伝心ゲーム予想 = "pred"）。
+ * 問題数は form.answerEntries の個数で決まる。
+ * ゲストが答えられるのは、司会画面がいま受付を開けている問題だけ（js/gate.js）。
  * 編集方法は README.md を参照。
  *
  * 【重要・フォーム側の前提】回答は「1問ごと」に送信する。
@@ -13,8 +14,8 @@
 
 export const SECTIONS = [
   {
-    id: "quiz", // 送信済み状態の保存キーにも使う。途中で変えない
-    menuLabel: "クイズ（全10問）",
+    id: "quiz", // 送信済み状態の保存キーと、受付の対象（"q1"〜"q10"）に使う。変えない
+    title: "クイズ（全10問）",
     // 問題文はスライドに出すので、ページ側は共通の案内だけを表示する
     promptLines: ["スクリーンの問題を見て", "選んでください"],
     // フォームに送る値そのもの。フォーム側の選択肢と1文字でも違うと記録されない（A/B/C/D は半角）
@@ -25,8 +26,6 @@ export const SECTIONS = [
     choiceColumns: 2,
     progressLabel: (index, total) => `第${index + 1}問 / ${total}`,
     answerLabel: (index) => `第${index + 1}問`, // 「第3問は送信済みです」の表示に使う
-    // 全問を送り終えたときに完了画面へ出す文
-    doneMessage: "クイズの回答を受け付けました。結果発表をお楽しみに！",
     // ページがうまく動かない人向けの、フォームへの直接リンク
     fallback: { label: "クイズのフォーム", url: "https://forms.gle/XmHLsmcajpB2wd218" },
     /* クイズ用フォーム（名前＋第1問〜第10問、11ページ）。第1問〜第10問は「必須」オフが前提 */
@@ -53,13 +52,14 @@ export const SECTIONS = [
     },
   },
   {
-    id: "pred",
-    menuLabel: "以心伝心ゲーム予想",
+    id: "pred", // 受付の対象（"pred"）に使う。変えない
+    title: "以心伝心ゲーム予想",
+    // 予想はスライドではなく、この質問文をゲストの画面に出す
     promptLines: ["新郎新婦の答えは", "5問中 何問そろいますか？"],
     choices: ["0問", "1問", "2問", "3問", "4問", "5問"],
+    choiceColumns: 2, // 2×3 に並べて、質問文・選択肢・送信ボタンをスマホの1画面に収める
     progressLabel: () => "以心伝心ゲーム",
     answerLabel: () => "予想",
-    doneMessage: "予想を受け付けました。結果発表をお楽しみに！",
     fallback: { label: "予想のフォーム", url: "https://forms.gle/P3A1VpHLHZuu6wNn8" },
     /* 予想用フォーム（名前＋予想、1ページ） */
     form: {
@@ -81,13 +81,31 @@ export const SUBMIT = {
 };
 
 /*
- * 司会画面（host.html）の設定。ゲスト用の回答ページはこの値を使わない。
+ * 受付状態（いまどの問題を受け付けているか）を、回答ページが読みに行く間隔など。
+ * 読む先は HOST.statsUrl（…/exec?action=state）。
+ */
+export const GATE = {
+  // 何ミリ秒ごとに読むか。全員が同時に読まないよう、毎回 0〜jitterMs をランダムに足す（2〜3秒ごと）
+  pollMs: 2000,
+  jitterMs: 1000,
+  // この時間（ミリ秒）応答がなければ、その回は失敗として扱う
+  timeoutMs: 8000,
+  // 失敗が続くほど間隔をあける。その上限（ミリ秒）
+  maxBackoffMs: 20000,
+  // 最後に読めてからこの時間（ミリ秒）を過ぎたら、状態が分からないものとして回答ボタンを出さない
+  //（つながらない間に締め切られた問題へ、気づかずに答えてしまわないように）
+  staleMs: 20000,
+};
+
+/*
+ * Apps Script ウェブアプリの設定。司会画面（host.html）と、回答ページの受付状態の取得で使う。
  */
 export const HOST = {
   // 集計用 Apps Script ウェブアプリの URL（https://script.google.com/macros/s/…/exec）。
-  // 空のままだと司会画面は「未設定」の案内を表示する。設定手順は README.md の「司会画面」を参照。
+  // 空のままだと司会画面は「未設定」の案内を表示し、回答ページは問題を出せない。
+  // 設定手順は README.md の「司会画面」を参照。
   statsUrl: "https://script.google.com/macros/s/AKfycbzBHCykKSa5ZCUgvMJnNfgk9oq0z_R99E7ZRp8ki_jjGs2-094TuIGJO5Covbeiz8I5/exec",
-  // 何ミリ秒ごとに集計を取りに行くか
+  // 司会画面が、何ミリ秒ごとに人数と受付状態を取りに行くか
   pollMs: 3000,
   // この時間（ミリ秒）応答がなければ、その回は失敗として扱う（前回の表示は残す）
   timeoutMs: 8000,

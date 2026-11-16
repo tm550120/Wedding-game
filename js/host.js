@@ -1,118 +1,147 @@
 /*
- * 司会画面（host.html）。会場のスクリーンに映す。動き方は2つある。
+ * 司会画面（host.html）。会場のスクリーンに映す。
  *
- * 1. スライドショー（司会キーがあるとき / ?demo=1）
- *    Google スライドを1枚ずつ画像で映し、→ / クリックで進める。
- *    「第N問 回答数」「予想 回答数」のスライドだけは、画像の代わりにリアルタイムの回答数グラフを映す。
- *    どのスライドがグラフかは Apps Script（apps-script/Code.gs）がスライド上の文字で判定して返す。
- *    操作: → ↓ Space Enter PageDown クリック（次へ）、← ↑ Backspace PageUp（前へ）、Home / End、
- *          R（スライドを読み直す）、F（全画面）。
+ * Google スライドを1枚ずつ画像で映し、→ / クリックで進める。問題のスライド（第N問・予想）では、
+ * 1枚のスライドの上で「受付 → 締め切り → 正解」の順に進む。
  *
- * 2. グラフだけ（司会キーがないとき / ?chart=1 / スライドを取得できないとき）
- *    問題を選んで、その回答数グラフだけを映す（スライドは別のウィンドウで映す使い方）。
- *    操作: 下のボタン、← / →（前後）、1〜9・0（第1〜9問・第10問）、P（予想）、F（全画面）。
+ *   スライドに来る  … その問題の回答の受付を開ける（ゲストのスマホに回答ボタンが出る）。「回答 ◯人」を重ねて映す
+ *   →              … 締め切る。「締め切り」と最終の人数を映す
+ *   →              … 正解を重ねて映す（クイズだけ。予想には正解の表示はない）
+ *   →              … 次のスライドへ
+ *   ←              … 正解を隠す → 前のスライドへ。締め切った問題に戻っても、受付は開け直さない
+ *   O              … いまのスライドの問題の受付を開け直す
  *
- * 集計は Apps Script が返す JSON を読むだけで、Google フォームへは何も送らない。名前は届かない（人数だけ）。
+ * どのスライドが問題かは Apps Script（apps-script/Code.gs）がスライド上の文字で判定して返す。
+ * 受付状態は Apps Script が持つ。この画面は「→ を押した」などの操作のときだけ切り替えを頼み、
+ * 開いただけ・再読み込みしただけでは何も切り替えない（別の端末で開いても本番の受付を壊さないように）。
  *
- *   { updatedAt, quiz: { "1": {A,B,C,D,total}, …, "10": {…} }, pred: { "0問": n, …, "5問": n, total } }
+ * スライドを取得できないとき（司会キーがない / ?panel=1 / 取得に失敗）は、第1問〜第10問と予想を
+ * 1枚ずつ並べた仮のスライドで同じように動く。司会キーがないときは受付を切り替えられず、人数を映すだけになる。
  *
- * 【将来の正解発表について】いまは人数の表示だけ。足すときは、Code.gs が「正解」タブを読んで
- * JSON に正解を含め、renderStats() で該当する行に .correct、それ以外に .dimmed を付ければよい
- * （スタイルは css/host.css に用意済み）。
+ * 映すのは人数の合計だけ（選択肢ごとの人数は Apps Script からも届かない）。名前も届かない。
+ * 正解は司会キーで取得して、この画面のメモリにだけ持つ。
  */
-import { SECTIONS, HOST } from "./config.js";
-import { takeHostKey, fetchStats, fetchSlideList } from "./host-api.js";
-import { loadDemoStats, loadDemoSlides } from "./host-demo.js";
+import { HOST } from "./config.js";
+import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, sendSetOpen, isFatal } from "./host-api.js";
+import { createDemoBackend } from "./host-demo.js";
+import { panelSlides } from "./host-panel.js";
+import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate } from "./gate.js";
 
 const $ = (id) => document.getElementById(id);
 
 const query = new URLSearchParams(location.search);
 const DEMO = query.get("demo") === "1";
-const CHART_ONLY = query.get("chart") === "1";
+const PANEL_ONLY = query.get("panel") === "1" || query.get("chart") === "1";
 const hostKey = takeHostKey(); // URL の ?key=… はここで保存して、アドレスバーから消す
-// 再読み込み前の位置。"#3" = グラフだけの画面の第3問、"#s12" = スライドショーの12枚目
-const startHash = location.hash;
+const startHash = location.hash; // 再読み込み前の位置。"#s12" = 12枚目
 
-const netOptions = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
-
-/** 集計の取得方法。null なら未設定。 */
-const loadStats = DEMO ? loadDemoStats : HOST.statsUrl ? () => fetchStats(HOST.statsUrl, netOptions) : null;
-
-/** スライド一覧の取得方法。null ならスライドショーを使わない（グラフだけの画面になる）。 */
-const loadSlides = CHART_ONLY
-  ? null
-  : DEMO
-    ? loadDemoSlides
-    : HOST.statsUrl && hostKey
-      ? (refresh) => fetchSlideList(HOST.statsUrl, hostKey, refresh, { ...netOptions, timeoutMs: HOST.slidesTimeoutMs })
-      : null;
+const net = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
 
 /*
- * グラフの表示単位（ビュー）。クイズは1問ごと、予想は1つ。config.js の SECTIONS から作るので、
- * 問題数や選択肢を変えてもここは直さなくてよい。pick は集計 JSON からそのビューの人数を取り出す。
- * kind / question は、スライド一覧の kind（"quizCounts" / "predCounts"）との対応付けに使う。
+ * Apps Script とのやり取り一式。null なら未設定。
+ * loadSlides / loadAnswers / setOpen は司会キーが要るので、キーがなければ null（表示のみになる）。
  */
-const VIEWS = SECTIONS.flatMap((section) => {
-  const count = section.form.answerEntries.length;
-  if (count === 1) {
-    return [{
-      kind: section.id + "Counts",
-      title: section.menuLabel,
-      kicker: section.promptLines.join(""),
-      navLabel: section.answerLabel(0),
-      choices: section.choices,
-      pick: (stats) => stats?.[section.id],
-    }];
-  }
-  return Array.from({ length: count }, (_, i) => ({
-    kind: section.id + "Counts",
-    question: i + 1,
-    title: section.answerLabel(i),
-    kicker: "みなさんの回答",
-    navLabel: String(i + 1),
-    choices: section.choices,
-    pick: (stats) => stats?.[section.id]?.[String(i + 1)],
-  }));
-});
+const backend = DEMO
+  ? createDemoBackend()
+  : !HOST.statsUrl
+    ? null
+    : {
+        loadStats: () => fetchStats(HOST.statsUrl, net),
+        loadSlides: hostKey ? (refresh) => fetchSlideList(HOST.statsUrl, hostKey, refresh, { ...net, timeoutMs: HOST.slidesTimeoutMs }) : null,
+        loadAnswers: hostKey ? () => fetchAnswers(HOST.statsUrl, hostKey, net) : null,
+        setOpen: hostKey ? (target) => sendSetOpen(HOST.statsUrl, hostKey, target, net) : null,
+      };
+const loadSlides = PANEL_ONLY ? null : backend?.loadSlides || null;
 
 const state = {
-  view: 0,      // VIEWS の添字（いま出しているグラフ）
-  stats: null,  // 最後に取得できた集計（取得に失敗しても消さない）
-  rows: [],     // いま画面にある棒: { choice, fill, count, pct }
-  slides: [],   // スライドショーのスライド: { objectId, kind, question, el, imageUrl, loaded, failed }
-  slide: 0,     // slides の添字
-  waitingForSlides: false, // 最初のスライド一覧を待っている間だけ true
-  errors: { stats: "", slides: "" },
+  slides: [],        // { objectId, kind, question, el, imageUrl, loaded, failed }
+  slide: 0,          // slides の添字
+  panel: false,      // 仮のスライド（第1問〜予想）で動いているか
+  waitingForSlides: false,
+  gate: EMPTY_GATE,  // 受付状態（切り替えを頼んだ直後は、応答を待たずに先に変えてある）
+  gateKnown: false,  // Apps Script から受付状態を一度でも受け取ったか
+  stats: null,       // 最後に取得できた人数（取得に失敗しても消さない）
+  answers: null,     // 正解 { "1": "B", … }。まだ取得できていなければ null
+  revealed: false,   // いまのスライドで正解を映しているか
+  missing: "",       // スライドに目印が見つからない問題（1枚目でだけ知らせる）
+  errors: {},
 };
 
-/** スライドショーとして動いているか（スライド一覧を取得できているか）。 */
-const slideshow = () => state.slides.length > 0;
+/* ===== 受付の対象と状態 ===== */
 
-/** そのスライドがグラフのスライドなら VIEWS の添字、画像のスライドなら -1。 */
-function viewIndexOf(slide) {
-  if (!slide || slide.kind === "slide") return -1;
-  return VIEWS.findIndex((v) => v.kind === slide.kind && (v.question === undefined || v.question === slide.question));
+/** そのスライドが受け付ける対象（"q5" / "pred"）。普通のスライドなら null。 */
+function targetOf(slide) {
+  if (!slide) return null;
+  const target = slide.kind === "question" ? "q" + slide.question : slide.kind === "prediction" ? "pred" : null;
+  return parseTarget(target) ? target : null;
 }
 
-/* ===== 数字と棒の表示 ===== */
+const currentTarget = () => targetOf(state.slides[state.slide]);
+const isQuestion = (target) => target !== "pred";
 
-/** 数字を前の値から新しい値へなめらかに動かす。 */
-function tweenNumber(el, to) {
-  const from = Number(el.dataset.value || 0);
-  el.dataset.value = String(to);
-  cancelAnimationFrame(Number(el.dataset.raf || 0));
-  if (from === to) {
-    el.textContent = String(to);
-    return;
+/** その対象の受付の状態。"open" = 受付中 / "closed" = 締め切り済み / "ready" = まだ開けていない */
+function viewOf(target) {
+  if (state.gate.open === target) return "open";
+  return state.gate.done.includes(target) ? "closed" : "ready";
+}
+
+/** 受付を切り替えられるか（司会キーがあり、いまの受付状態が分かっている）。 */
+const writable = () => Boolean(backend?.setOpen) && state.gateKnown;
+
+function totalOf(target) {
+  const { section, index } = parseTarget(target);
+  const counts = section.id === "quiz" ? state.stats?.quiz?.[String(index + 1)] : state.stats?.pred;
+  return Math.max(Number(counts?.total) || 0, 0);
+}
+
+/*
+ * 受付の切り替え。表示は応答を待たずに先に変え、Apps Script へは「いちばん新しい望み」だけを送る
+ * （続けて操作したときに、途中の状態を1つずつ送らない）。失敗したら間隔をあけて送り直す。
+ */
+let desired = null; // まだ Apps Script に伝わっていない切り替え先
+let writing = false;
+let gateEpoch = 0; // 切り替えの前後で増える。切り替えをまたいだ取得結果（古い受付状態）を捨てるために使う
+
+function requestGate(target) {
+  if (!writable()) return;
+  desired = target;
+  state.gate = reduceGate(state.gate, target);
+  gateEpoch++;
+  pumpGate();
+}
+
+async function pumpGate() {
+  if (writing) return;
+  writing = true;
+  let wait = 0;
+  while (desired !== null) {
+    const target = desired;
+    try {
+      const gate = await backend.setOpen(target);
+      if (desired === target) {
+        desired = null;
+        state.gate = gate;
+      }
+      wait = 0;
+      setError("gate", "");
+    } catch (e) {
+      if (isFatal(e)) {
+        desired = null; // 待っても直らない。受付状態は次の取得で実際の値に戻る
+        setError("gate", "受付を切り替えられません: " + e.message);
+      } else {
+        setError("gate", "受付の切り替えに失敗（再試行中）");
+        wait = Math.min((wait || 500) * 2, 8000);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+    }
   }
-  const start = performance.now();
-  const step = (now) => {
-    const t = Math.min((now - start) / 600, 1);
-    el.textContent = String(Math.round(from + (to - from) * (1 - (1 - t) ** 3)));
-    if (t < 1) el.dataset.raf = String(requestAnimationFrame(step));
-  };
-  el.dataset.raf = String(requestAnimationFrame(step));
+  writing = false;
+  gateEpoch++;
+  render();
+  kickPoll(true);
 }
+
+/* ===== 表示 ===== */
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -121,90 +150,162 @@ function el(tag, className, text) {
   return node;
 }
 
-/** ビューの選択肢に合わせて棒の行を作り直す（幅 0 から伸びる）。 */
-function buildRows(view) {
-  const bars = $("bars");
-  bars.style.setProperty("--rows", String(view.choices.length));
-  state.rows = view.choices.map((choice) => {
-    const row = el("div", "bar-row");
-    const track = el("div", "bar-track");
-    const fill = el("div", "bar-fill");
-    track.appendChild(fill);
-    const countBox = el("div", "bar-count");
-    const count = el("span", "", "0");
-    const pct = el("small", "bar-pct", "");
-    countBox.append(count, el("small", "", "人"), pct);
-    row.append(el("div", "bar-label", choice), track, countBox);
-    return { choice, row, fill, count, pct };
-  });
-  bars.replaceChildren(...state.rows.map((r) => r.row));
-  void bars.offsetWidth; // 幅 0 の状態を一度描かせてから伸ばす
+/** 数字を前の値から新しい値へなめらかに動かす。 */
+function tweenNumber(node, to) {
+  const from = Number(node.dataset.value || 0);
+  node.dataset.value = String(to);
+  cancelAnimationFrame(Number(node.dataset.raf || 0));
+  if (from === to) {
+    node.textContent = String(to);
+    return;
+  }
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min((now - start) / 600, 1);
+    node.textContent = String(Math.round(from + (to - from) * (1 - (1 - t) ** 3)));
+    if (t < 1) node.dataset.raf = String(requestAnimationFrame(step));
+  };
+  node.dataset.raf = String(requestAnimationFrame(step));
 }
 
-/** いまのビューの人数を画面に反映する。 */
-function renderStats() {
-  const view = VIEWS[state.view];
-  const counts = view.pick(state.stats) || {};
-  const values = view.choices.map((choice) => Math.max(Number(counts[choice]) || 0, 0));
-  const sum = values.reduce((a, b) => a + b, 0);
-  const max = Math.max(...values, 1);
-  // total が無い・おかしい場合は選択肢の合計を使う
-  const total = Number.isFinite(Number(counts.total)) ? Number(counts.total) : sum;
+const STATUS_TEXT = { ready: "受付前", open: "回答受付中", closed: "締め切り" };
 
-  state.rows.forEach((row, i) => {
-    row.fill.style.width = (values[i] / max) * 100 + "%"; // いちばん多い選択肢を端までの長さにする
-    tweenNumber(row.count, values[i]);
-    row.pct.textContent = sum > 0 ? Math.round((values[i] / sum) * 100) + "%" : "";
-  });
-  tweenNumber($("total"), total);
+/** 司会者向けの、次の操作の案内（左下に小さく出す）。 */
+function hintFor(target, view) {
+  if (!target) return "";
+  if (!backend?.setOpen) return "表示のみ（司会キーがないので、受付は切り替えられません）";
+  if (!state.gateKnown) return "受付状態を確認中…";
+  if (view === "ready") return "→ 受付開始";
+  if (view === "open") return "→ 締め切る";
+  if (state.revealed) return "→ 次へ ／ ← 正解を隠す";
+  return (isQuestion(target) ? "→ 正解を表示" : "→ 次へ") + " ／ O 受付を再開";
 }
 
-/** グラフを指定のビューに切り替える。 */
-function showView(index) {
-  state.view = Math.min(Math.max(index, 0), VIEWS.length - 1);
-  const view = VIEWS[state.view];
-  $("view-title").textContent = view.title;
-  $("view-kicker").textContent = view.kicker;
-  [...$("nav").children].forEach((b, i) => {
-    b.classList.toggle("current", i === state.view);
-    b.setAttribute("aria-pressed", String(i === state.view));
-  });
-  buildRows(view);
-  renderStats();
-}
-
-/** グラフだけの画面で、表示する問題を選ぶ。再読み込みしても同じ問題に戻れるよう URL に残す。 */
-function selectView(index) {
-  showView(index);
-  history.replaceState(null, "", "#" + (state.view + 1));
-}
-
-/* ===== スライドショー ===== */
-
-/** 画面の重なりを、いまの状態に合わせる（画像のスライドのときだけ、全面の画像でグラフを覆う）。 */
-function updateStage() {
+/** 画面全体を、いまの状態に合わせる。 */
+function render() {
   const current = state.slides[state.slide];
-  const onImage = slideshow() && viewIndexOf(current) < 0;
-  document.body.classList.toggle("slideshow", slideshow());
-  $("stage").classList.toggle("hidden", !(onImage || (!slideshow() && state.waitingForSlides)));
+  const target = targetOf(current);
+  const view = target ? viewOf(target) : null;
+
+  // スライド
   state.slides.forEach((slide) => slide.el.classList.toggle("current", slide === current));
-  $("stage-message").classList.toggle("hidden", onImage && current.loaded);
-  $("stage-message").textContent = onImage && current.failed ? "スライドの画像を読み込めません（再試行中）" : "スライドを読み込み中…";
-  $("slide-pos").textContent = slideshow() ? state.slide + 1 + " / " + state.slides.length : "";
+  const showMessage = current ? !current.loaded : state.waitingForSlides;
+  $("stage-message").classList.toggle("hidden", !showMessage);
+  $("stage-message").textContent = current?.failed ? "スライドの画像を読み込めません（再試行中）" : "スライドを読み込み中…";
+  $("slide-pos").textContent = current ? state.slide + 1 + " / " + state.slides.length : "";
+  $("hint").textContent = hintFor(target, view);
+
+  // 受付の状態と人数（問題のスライドのときだけ）
+  $("gate").classList.toggle("hidden", !target);
+  if (target) {
+    $("gate").dataset.view = view;
+    $("gate-status").textContent = STATUS_TEXT[view];
+    $("gate-count").classList.toggle("hidden", view === "ready");
+    tweenNumber($("gate-total"), view === "ready" ? 0 : totalOf(target));
+  }
+
+  // 正解
+  const revealing = Boolean(target) && state.revealed;
+  $("reveal").classList.toggle("hidden", !revealing);
+  if (revealing) {
+    const answer = state.answers?.[String(parseTarget(target).index + 1)];
+    $("reveal").classList.toggle("missing", !answer);
+    $("reveal-kicker").textContent = "✦ " + targetLabel(target) + " ✦";
+    $("reveal-label").textContent = answer ? "正解は" : state.answers ? "正解が未設定です" : "正解を読み込み中…";
+    $("reveal-answer").textContent = answer || (state.answers ? "スプレッドシートの「正解」タブを確認してください" : "");
+  }
+
+  // スライドの目印の不足は、1枚目でだけ知らせる（本番の途中で出しっぱなしにしない）
+  setError("deck", state.slide === 0 ? state.missing : "");
 }
 
-function showSlide(index) {
-  state.slide = Math.min(Math.max(index, 0), state.slides.length - 1);
-  const view = viewIndexOf(state.slides[state.slide]);
-  if (view >= 0) showView(view);
-  updateStage();
-  history.replaceState(null, "", "#s" + (state.slide + 1)); // 再読み込みしても同じスライドに戻る
-  // 次の2枚は先に展開しておき、切り替えた瞬間に映るようにする（画像の取得自体は一覧を受け取った時点で全部始めている）
-  state.slides.slice(state.slide + 1, state.slide + 3).forEach((slide) => {
+/** 右下のエラー表示。種類ごとに持ち、まとめて出す。 */
+function setError(source, message) {
+  state.errors[source] = message || "";
+  const text = Object.values(state.errors).filter(Boolean).join(" / ");
+  $("badge-error").textContent = text;
+  $("badge-error").classList.toggle("hidden", !text);
+}
+
+/* ===== スライドの移動と、1枚の中の段階 ===== */
+
+/**
+ * スライドを移動する。how: "forward"（→ で1枚進んだ）/ "back"（← で1枚戻った）/ "jump"（Home・数字キーなど）/
+ * "init"（開いた直後・スライド一覧の読み直し。受付は切り替えない）
+ */
+function goTo(index, how) {
+  const next = Math.min(Math.max(index, 0), state.slides.length - 1);
+  if (how !== "init" && next === state.slide) return;
+  state.slide = next;
+  state.revealed = false;
+
+  const target = currentTarget();
+  if (how !== "init" && writable()) {
+    const view = target && viewOf(target);
+    if (view === "ready" && how === "forward") {
+      requestGate(target); // 問題のスライドに進んできたら、その問題の受付を開ける
+    } else if (target) {
+      // 戻ってきた・飛んできた問題は、勝手に開けない。ほかの問題が開いたままなら閉じる
+      if (view !== "open" && state.gate.open) requestGate("none");
+      if (view === "closed" && how === "back" && isQuestion(target)) state.revealed = true; // ← で「正解 → 締め切り」と戻れるように
+    } else if (state.gate.open || state.gate.lastClosed) {
+      requestGate("idle"); // 普通のスライドでは何も受け付けない（ゲストは「お待ちください」になる）
+    }
+  }
+
+  history.replaceState(null, "", "#s" + (next + 1)); // 再読み込みしても同じスライドに戻る
+  // 次の2枚は先に展開しておき、切り替えた瞬間に映るようにする
+  state.slides.slice(next + 1, next + 3).forEach((slide) => {
     if (slide.loaded) slide.el.decode?.().catch(() => {});
   });
-  kickPoll();
+  render();
 }
+
+/** → / クリック。問題のスライドでは「受付 → 締め切り → 正解」と1段ずつ進み、最後に次のスライドへ。 */
+function advance() {
+  const target = currentTarget();
+  if (target) {
+    const view = viewOf(target);
+    if (writable() && view !== "closed") {
+      requestGate(view === "ready" ? target : "none");
+      render();
+      return;
+    }
+    if (view === "closed" && !state.revealed && isQuestion(target) && backend?.loadAnswers) {
+      state.revealed = true;
+      if (!state.answers) refreshAnswers();
+      render();
+      return;
+    }
+  }
+  goTo(state.slide + 1, "forward");
+}
+
+/** ←。正解を映していれば隠し、そうでなければ前のスライドへ（受付は開け直さない）。 */
+function retreat() {
+  if (state.revealed) {
+    state.revealed = false;
+    render();
+  } else {
+    goTo(state.slide - 1, "back");
+  }
+}
+
+/** O キー。いまのスライドの問題の受付を開け直す（締め切ったあとで、もう一度受け付けたいとき）。 */
+function reopen() {
+  const target = currentTarget();
+  if (!target || !writable() || viewOf(target) === "open") return;
+  state.revealed = false;
+  requestGate(target);
+  render();
+}
+
+function jumpToTarget(target) {
+  const index = state.slides.findIndex((slide) => targetOf(slide) === target);
+  if (index >= 0) goTo(index, "jump");
+}
+
+/* ===== スライドの読み込み ===== */
 
 /**
  * スライド1枚の画像を読み込む。読み終わるまでは前の画像（あれば）を出したままにし、読めたら差し替える。
@@ -223,25 +324,26 @@ function loadImage(slide, url) {
     slide.el.replaceWith(img);
     slide.el = img;
     slide.loaded = true;
-    updateStage();
+    render();
   };
   img.onerror = () => {
     if (slide.imageUrl !== url) return;
     // URL の期限切れなど。そのスライドの画像だけ作り直してもらう
     slide.failed = true;
-    updateStage();
+    render();
     scheduleSlides("", nextBackoff());
   };
   img.src = url;
 }
 
 /** 取得したスライド一覧を画面に反映する。スライドの増減・並べ替えがあっても、いまのスライドに留まる。 */
-function applySlides(list) {
-  const first = !slideshow();
-  const currentId = state.slides[state.slide]?.objectId;
+function applySlides(list, panel) {
+  const first = state.slides.length === 0;
+  const current = state.slides[state.slide];
   const known = new Map(state.slides.map((slide) => [slide.objectId, slide]));
   const urls = new Map(list.map((item) => [item.objectId, item.imageUrl]));
 
+  state.panel = panel;
   state.slides = list.map((item) => {
     const slide = known.get(item.objectId) || { objectId: item.objectId, el: Object.assign(el("img"), { alt: "" }), imageUrl: null, loaded: false, failed: false };
     slide.kind = item.kind;
@@ -250,7 +352,9 @@ function applySlides(list) {
   });
   $("stage").replaceChildren($("stage-message"), ...state.slides.map((slide) => slide.el));
 
-  let index = state.slides.findIndex((slide) => slide.objectId === currentId);
+  // 同じスライド → （仮のスライドから本物に替わったときは）同じ問題のスライド → 開いたときの位置、の順で探す
+  let index = state.slides.findIndex((slide) => slide.objectId === current?.objectId);
+  if (index < 0 && targetOf(current)) index = state.slides.findIndex((slide) => targetOf(slide) === targetOf(current));
   if (index < 0) index = first ? (Number.parseInt(startHash.replace(/^#s/, ""), 10) || 1) - 1 : state.slide;
   index = Math.min(Math.max(index, 0), state.slides.length - 1);
 
@@ -258,9 +362,19 @@ function applySlides(list) {
   state.slides.forEach((_, i) => {
     const slide = state.slides[(index + i) % state.slides.length];
     const url = urls.get(slide.objectId);
-    if (slide.kind === "slide" && url && url !== slide.imageUrl) loadImage(slide, url);
+    if (url && url !== slide.imageUrl) loadImage(slide, url);
   });
-  showSlide(index);
+
+  const found = new Set(state.slides.map(targetOf));
+  const missing = ALL_TARGETS.filter((target) => !found.has(target)).map(targetLabel);
+  // 仮のスライド・デモでは知らせない（本物のスライドの作り忘れに気づくための表示）
+  state.missing = !panel && !DEMO && missing.length > 0 ? "スライドに目印が見つかりません: " + missing.join("・") : "";
+  goTo(index, "init");
+}
+
+/** Google スライドを映せないときは、第1問〜第10問と予想の仮のスライドで動かす。 */
+function usePanelSlides() {
+  if (state.slides.length === 0) applySlides(panelSlides(), true);
 }
 
 let slidesTimer = null;
@@ -292,85 +406,45 @@ async function refreshSlides(mode) {
   slidesBusy = true;
   let retry = null; // [mode, 待つミリ秒]
   try {
-    const failedIds = state.slides.filter((slide) => slide.failed).map((slide) => slide.objectId);
+    const failedIds = state.panel ? [] : state.slides.filter((slide) => slide.failed).map((slide) => slide.objectId);
     const res = await loadSlides(mode === "all" ? "all" : failedIds.join(","));
     if (res.slides.length === 0) throw Object.assign(new Error("スライドが1枚もありません"), { code: "empty" });
-    applySlides(res.slides);
+    applySlides(res.slides, false);
     const problems = Array.isArray(res.errors) ? res.errors : [];
     setError("slides", problems.join(" / "));
     // pending: Google 側でまだ画像を作れていないスライドがある。続きを取りに行く
     if (res.pending > 0) retry = ["", problems.length > 0 ? nextBackoff() : 1000];
   } catch (e) {
     // キー違い・未設定は、待っても直らないので再試行しない。それ以外（通信エラーなど）は間隔をあけて再試行する
-    const fatal = e.code === "unauthorized" || e.code === "not_configured";
     setError("slides", e.code ? "スライド: " + e.message : "スライドを取得できません（再試行中）");
-    if (!fatal) retry = [mode, nextBackoff()];
+    if (!isFatal(e)) retry = [mode, nextBackoff()];
+    usePanelSlides(); // スライドが出せない間も、問題の受付と人数の表示はできるようにする
   } finally {
     slidesBusy = false;
     state.waitingForSlides = false;
-    updateStage();
+    render();
   }
   if (!retry) {
     // 取得中に読み込みに失敗した画像が残っていれば、もう一度頼む
-    if (state.slides.some((slide) => slide.failed)) retry = ["", nextBackoff()];
+    if (!state.panel && state.slides.some((slide) => slide.failed)) retry = ["", nextBackoff()];
     else slidesBackoff = 0;
   }
   if (retry) scheduleSlides(...retry);
 }
 
-/* ===== 切り替え（ボタン・キーボード・クリック） ===== */
-
-function initNav() {
-  $("nav").replaceChildren(
-    ...VIEWS.map((view, i) => {
-      const b = el("button", "", view.navLabel);
-      b.type = "button";
-      b.title = view.title;
-      b.addEventListener("click", () => {
-        selectView(i);
-        b.blur(); // ボタンにフォーカスが残ると、Space/Enter で意図せず押されるため
-      });
-      return b;
-    })
-  );
-
-  const tenth = VIEWS.findIndex((v) => v.navLabel === "10"); // 0 キー = 第10問
-  const pred = VIEWS.length - 1; // P キー = 最後のビュー（以心伝心ゲーム予想）
-
-  document.addEventListener("keydown", (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const key = e.key;
-    if (key === "f" || key === "F") toggleFullscreen();
-    else if (slideshow()) {
-      // プレゼン用リモコン（クリッカー）は PageDown / PageUp や → / ← を送る
-      if (["ArrowRight", "ArrowDown", "PageDown", " ", "Enter"].includes(key)) showSlide(state.slide + 1);
-      else if (["ArrowLeft", "ArrowUp", "PageUp", "Backspace"].includes(key)) showSlide(state.slide - 1);
-      else if (key === "Home") showSlide(0);
-      else if (key === "End") showSlide(state.slides.length - 1);
-      else if (key === "r" || key === "R") refreshSlides("all");
-      else return;
-    } else if (key === "ArrowRight" || key === "PageDown") selectView(state.view + 1);
-    else if (key === "ArrowLeft" || key === "PageUp") selectView(state.view - 1);
-    else if (/^[1-9]$/.test(key)) selectView(Number(key) - 1);
-    else if (key === "0" && tenth >= 0) selectView(tenth);
-    else if (key === "p" || key === "P") selectView(pred);
-    else return;
-    e.preventDefault();
-  });
-
-  // スライドショー中は、画面のどこをクリックしても次へ進む
-  document.addEventListener("click", (e) => {
-    if (!slideshow() || e.target.closest("a, button")) return;
-    showSlide(state.slide + 1);
-  });
+/** 正解を取得する（司会キーが要る）。失敗しても、正解を映すときにもう一度試す。 */
+async function refreshAnswers() {
+  if (!backend?.loadAnswers) return;
+  try {
+    state.answers = await backend.loadAnswers();
+    setError("answers", "");
+  } catch (e) {
+    setError("answers", e.code ? "正解: " + e.message : "正解を取得できません");
+  }
+  render();
 }
 
-function toggleFullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen?.().catch(() => {});
-}
-
-/* ===== 集計の定期更新 ===== */
+/* ===== 人数と受付状態の定期更新 ===== */
 
 function formatTime(value) {
   const d = new Date(value);
@@ -378,38 +452,28 @@ function formatTime(value) {
   return [date.getHours(), date.getMinutes(), date.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-/** 右下のエラー表示。集計（stats）とスライド（slides）を別々に持ち、まとめて出す。 */
-function setError(source, message) {
-  state.errors[source] = message || "";
-  const text = Object.values(state.errors).filter(Boolean).join(" / ");
-  $("badge-error").textContent = text;
-  $("badge-error").classList.toggle("hidden", !text);
-}
-
-/**
- * いま集計を取りに行く必要があるか。グラフだけの画面では常に必要。
- * スライドショーでは、グラフのスライドを映している間と、その1枚手前にいる間だけ取りに行く
- * （手前から取っておくので、グラフに切り替えた瞬間から新しい数字が出る）。
- */
-function wantsStats() {
-  if (!slideshow()) return true;
-  return [state.slide, state.slide + 1].some((i) => viewIndexOf(state.slides[i]) >= 0);
-}
-
 let pollTimer = null;
 let pollBusy = false;
 
 async function poll() {
+  clearTimeout(pollTimer);
   pollTimer = null;
-  if (pollBusy || !loadStats || !wantsStats()) return; // 不要になったら止まる。kickPoll() でまた動き出す
+  if (pollBusy || !backend) return;
   pollBusy = true;
+  const epoch = gateEpoch;
   try {
-    const stats = await loadStats();
+    const stats = await backend.loadStats();
     state.stats = stats;
     $("updated").textContent = "最終更新 " + formatTime(stats.updatedAt);
     // Code.gs 側の設定ミス（タブ名の間違いなど）は errors で届く。名前は含まれない
     setError("stats", Array.isArray(stats.errors) && stats.errors.length > 0 ? "設定エラー: " + stats.errors.join(" / ") : "");
-    renderStats();
+    setError("gateApi", stats.state ? "" : "Apps Script が古いままです（受付の切り替えには Code.gs の更新と再デプロイが必要）");
+    // 取得している間に受付を切り替えていたら、この受付状態は古いので使わない
+    if (stats.state && epoch === gateEpoch && !writing) {
+      state.gate = stats.state;
+      state.gateKnown = true;
+    }
+    render();
   } catch (e) {
     // 失敗しても前回の数字は表示したままにして、次の回でまた試す
     setError("stats", "通信エラー（再試行中）");
@@ -420,27 +484,61 @@ async function poll() {
   pollTimer = setTimeout(poll, HOST.pollMs);
 }
 
-/** 定期更新が止まっていれば動かす。 */
-function kickPoll() {
-  if (!pollBusy && !pollTimer) poll();
+/** 定期更新が止まっていれば動かす。now が true なら、次の予定を待たずにすぐ取りに行く。 */
+function kickPoll(now) {
+  if (!pollBusy && (now || !pollTimer)) poll();
+}
+
+/* ===== キーボード・クリック ===== */
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
+function initControls() {
+  document.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const key = e.key;
+    if (key === "f" || key === "F") toggleFullscreen();
+    else if (state.slides.length === 0) return;
+    // プレゼン用リモコン（クリッカー）は PageDown / PageUp や → / ← を送る
+    else if (["ArrowRight", "ArrowDown", "PageDown", " ", "Enter"].includes(key)) advance();
+    else if (["ArrowLeft", "ArrowUp", "PageUp", "Backspace"].includes(key)) retreat();
+    else if (key === "Home") goTo(0, "jump");
+    else if (key === "End") goTo(state.slides.length - 1, "jump");
+    else if (key === "o" || key === "O") reopen();
+    else if (key === "r" || key === "R") {
+      refreshSlides("all");
+      refreshAnswers();
+    } else if (/^[0-9]$/.test(key)) jumpToTarget("q" + (key === "0" ? 10 : key));
+    else if (key === "p" || key === "P") jumpToTarget("pred");
+    else return;
+    e.preventDefault();
+  });
+
+  // 画面のどこをクリックしても次へ進む
+  document.addEventListener("click", (e) => {
+    if (state.slides.length === 0 || e.target.closest("a, button")) return;
+    advance();
+  });
 }
 
 /* ===== 起動 ===== */
 
-initNav();
-if (startHash.startsWith("#s")) showView(0); // スライドショーの位置は、スライド一覧が届いてから復元する
-else selectView((Number.parseInt(startHash.slice(1), 10) || 1) - 1);
-
 if (DEMO) $("badge-demo").classList.remove("hidden");
 
-if (!loadStats) {
+if (!backend) {
   $("setup").classList.remove("hidden");
-  $("bars").classList.add("hidden");
 } else {
+  initControls();
   kickPoll();
+  refreshAnswers();
   if (loadSlides) {
     state.waitingForSlides = true;
-    updateStage();
+    render();
     refreshSlides("");
+  } else {
+    usePanelSlides();
   }
 }

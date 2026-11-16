@@ -15,41 +15,30 @@
     <p class="sub">はじめに お名前を入れてください</p>
     <input type="text" id="guest-name" placeholder="お名前" autocomplete="off">
     <button class="primary" id="btn-start" disabled>つぎへ</button>
-    <p class="note">クイズ（全10問）と、以心伝心ゲームの予想に<br>答えられます。</p>
+    <p class="note">クイズ（全10問）と、以心伝心ゲームの予想に<br>答えられます。<br>問題が出ると、この画面に回答ボタンが出ます。</p>
   </section>
 
-  <!-- メニュー（ボタンとフォームへのリンクは js/config.js の SECTIONS から生成） -->
-  <section id="screen-menu" class="card hidden">
-    <h1>どちらに答えますか</h1>
-    <p class="who" id="menu-who"></p>
-    <div class="choices" id="menu-choices"></div>
-    <p class="note">スライドで問題が出たら、同じ問題に答えてください。<br>予想は、新郎新婦の答えが5問中何問そろうかの予想です。</p>
-    <p class="fallback">うまく開けない方はこちらから<br>
-      <span id="fallback-links"></span>
-    </p>
-  </section>
-
-  <!-- 質問（クイズ・予想で共用）。1問ごとに「選ぶ → 送信する」で送る -->
-  <section id="screen-question" class="card hidden">
-    <p class="progress" id="question-progress"></p>
-    <div class="qnav hidden" id="question-nav"></div>
-    <p class="qtext" id="question-prompt"></p>
-    <div class="choices" id="question-choices"></div>
+  <!--
+    回答（クイズ・予想で共用）。司会画面がいま受け付けている問題だけを js/app.js が自動で出す。
+    受付中でなければ「お待ちください」「締め切りました」を出す。ゲストが問題を選ぶことはできない。
+  -->
+  <section id="screen-live" class="card hidden" aria-live="polite">
+    <p class="who" id="live-who"></p>
+    <p class="progress" id="live-kicker"></p>
+    <p class="qtext" id="live-prompt"></p>
+    <div class="choices" id="live-choices"></div>
+    <p class="note live-note" id="live-note"></p>
     <p class="error hidden" id="submit-error" role="alert">送信できませんでした。<br>電波を確認して、もう一度お試しください。<br>
       <a id="submit-error-link" target="_blank" rel="noopener">うまくいかない場合はこちらのフォームから</a>
     </p>
-    <button class="primary" id="btn-submit" disabled>送信する</button>
-    <button class="primary hidden" id="btn-next">つぎの問題へ</button>
-    <button class="ghost" id="btn-question-back">← もどる</button>
+    <button class="primary hidden" id="btn-submit" disabled>送信する</button>
+    <p class="notice hidden" id="live-notice" role="status">通信が不安定です。自動でつなぎ直しています…</p>
   </section>
 
-  <!-- 完了 -->
-  <section id="screen-done" class="card hidden">
-    <div class="done-mark">✦</div>
-    <h1>ありがとうございました</h1>
-    <p class="note" id="done-note">回答を受け付けました。</p>
-    <button class="primary" id="btn-to-menu">メニューへもどる</button>
-  </section>
+  <p class="fallback hidden" id="fallback">うまく動かない方はこちらから<br>
+    <span id="fallback-links"></span>
+  </p>
+  <p class="demo-badge hidden" id="badge-demo">デモ表示（回答は送信されません）</p>
 
   <script type="module" src="js/app.js"></script>
 </body>
