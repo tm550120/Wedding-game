@@ -267,7 +267,9 @@ $("btn-fix").addEventListener("click", () => {
 
 /* 送信（隠しiframeへPOST） */
 let submitting = false;
+let submitTimer = null;
 $("btn-submit").addEventListener("click", () => {
+  if (submitting) return;
   const form = $("gform");
   form.innerHTML = "";
   let fields;
@@ -290,12 +292,18 @@ $("btn-submit").addEventListener("click", () => {
     form.appendChild(input);
   });
   submitting = true;
+  $("btn-submit").disabled = true;
+  $("btn-submit").textContent = "送信中…";
   form.submit();
-  setTimeout(() => { if (submitting) finishSubmit(); }, 4000);
+  submitTimer = setTimeout(() => { if (submitting) finishSubmit(); }, 4000);
 });
 $("gform-target").addEventListener("load", () => { if (submitting) finishSubmit(); });
 function finishSubmit(){
   submitting = false;
+  clearTimeout(submitTimer);
+  submitTimer = null;
+  $("btn-submit").disabled = false;
+  $("btn-submit").textContent = "送信する";
   if (state.confirmTarget === "quiz") state.submitted.quiz = true;
   if (state.confirmTarget === "pred") state.submitted.pred = true;
   $("done-note").textContent = state.confirmTarget === "quiz"
