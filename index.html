@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>以心伝心ゲーム 回答</title>
+<title>結婚式二次会 クイズ＆以心伝心ゲーム 回答</title>
 <style>
   :root{
     --green:#123528;
@@ -32,9 +32,7 @@
     padding:26px 20px 30px;
     box-shadow:0 10px 30px rgba(0,0,0,.35);
   }
-  h1{
-    font-size:26px; text-align:center; margin:4px 0 6px; letter-spacing:.14em; font-weight:600;
-  }
+  h1{ font-size:25px; text-align:center; margin:4px 0 6px; letter-spacing:.12em; font-weight:600; }
   .sub{ text-align:center; font-size:14px; color:var(--gold-light); margin:0 0 22px; letter-spacing:.08em; }
   .progress{ text-align:center; font-size:13px; color:var(--gold-light); letter-spacing:.2em; margin-bottom:14px; }
   .qtext{ font-size:20px; line-height:1.6; text-align:center; margin:6px 0 22px; font-weight:600; }
@@ -48,6 +46,7 @@
   }
   button.choice:active{ transform:scale(.98); background:var(--gold-light); }
   button.choice.selected{ background:var(--gold); color:#fff; }
+  button.choice .done-badge{ color:#2e7d4f; font-size:15px; }
   .primary{
     appearance:none; border:none; cursor:pointer; width:100%;
     background:var(--gold); color:#fff;
@@ -66,12 +65,13 @@
     outline:none;
   }
   .note{ font-size:13px; line-height:1.7; color:#d9d2ba; text-align:center; margin-top:18px; }
-  .fallback{ margin-top:26px; text-align:center; font-size:13px; }
+  .fallback{ margin-top:26px; text-align:center; font-size:13px; line-height:2; }
   .fallback a{ color:var(--gold-light); }
   .done-mark{ font-size:52px; text-align:center; color:var(--gold); margin:10px 0 4px; }
   .hidden{ display:none !important; }
   .summary{ font-size:15px; line-height:2; margin:0 0 6px; }
   .summary b{ color:var(--gold-light); font-weight:600; }
+  .who{ text-align:center; font-size:14px; color:var(--gold-light); margin-bottom:16px; }
 </style>
 </head>
 <body>
@@ -79,20 +79,42 @@
 
   <!-- 名前入力 -->
   <section id="screen-name" class="card">
-    <h1>以心伝心ゲーム</h1>
-    <p class="sub">新郎新婦の答えと そろえてください</p>
+    <h1>クイズ大会</h1>
+    <p class="sub">はじめに お名前を入れてください</p>
     <input type="text" id="guest-name" placeholder="お名前" autocomplete="off">
-    <button class="primary" id="btn-start" disabled>はじめる</button>
-    <p class="note">全5問です。スライドで問題が出たら、<br>同じ問題に答えてください。</p>
-    <p class="fallback">うまく開けない方は <a href="https://forms.gle/yRXusxC91QuDZiWc6" target="_blank" rel="noopener">こちらのフォーム</a> からどうぞ</p>
+    <button class="primary" id="btn-start" disabled>つぎへ</button>
+    <p class="note">クイズ（全10問）と、以心伝心ゲームの予想に<br>答えられます。</p>
   </section>
 
-  <!-- 質問 -->
-  <section id="screen-q" class="card hidden">
-    <p class="progress" id="q-progress">Q1 / 5</p>
-    <p class="qtext" id="q-text"></p>
-    <div class="choices" id="q-choices"></div>
-    <button class="ghost" id="btn-back">← もどる</button>
+  <!-- メニュー -->
+  <section id="screen-menu" class="card hidden">
+    <h1>どちらに答えますか</h1>
+    <p class="who" id="menu-who"></p>
+    <div class="choices">
+      <button class="choice" id="btn-go-quiz">クイズ（全10問）<span class="done-badge" id="badge-quiz"></span></button>
+      <button class="choice" id="btn-go-pred">以心伝心ゲーム予想<span class="done-badge" id="badge-pred"></span></button>
+    </div>
+    <p class="note">スライドで問題が出たら、同じ問題に答えてください。<br>予想は、新郎新婦の答えが5問中何問そろうかの予想です。</p>
+    <p class="fallback">うまく開けない方はこちらから<br>
+      <a href="https://forms.gle/XmHLsmcajpB2wd218" target="_blank" rel="noopener">クイズのフォーム</a>／
+      <a href="https://forms.gle/P3A1VpHLHZuu6wNn8" target="_blank" rel="noopener">予想のフォーム</a>
+    </p>
+  </section>
+
+  <!-- クイズ質問 -->
+  <section id="screen-quiz" class="card hidden">
+    <p class="progress" id="quiz-progress">第1問 / 10</p>
+    <p class="qtext">スクリーンの問題を見て<br>選んでください</p>
+    <div class="choices" id="quiz-choices"></div>
+    <button class="ghost" id="btn-quiz-back">← もどる</button>
+  </section>
+
+  <!-- 予想 -->
+  <section id="screen-pred" class="card hidden">
+    <p class="progress">以心伝心ゲーム</p>
+    <p class="qtext">新郎新婦の答えは<br>5問中 何問そろいますか？</p>
+    <div class="choices" id="pred-choices"></div>
+    <button class="ghost" id="btn-pred-back">← もどる</button>
   </section>
 
   <!-- 確認・送信 -->
@@ -107,7 +129,8 @@
   <section id="screen-done" class="card hidden">
     <div class="done-mark">✦</div>
     <h1>ありがとうございました</h1>
-    <p class="note">回答を受け付けました。<br>結果発表をお楽しみに！</p>
+    <p class="note" id="done-note">回答を受け付けました。</p>
+    <button class="primary" id="btn-to-menu">メニューへもどる</button>
   </section>
 
   <!-- Googleフォーム送信用（非表示） -->
@@ -117,112 +140,170 @@
 <script>
 "use strict";
 
-/* ===== Googleフォーム連携設定 =====
-   entry ID は事前入力URLから取得して差し替える（メインchatの取得結果待ち） */
-const FORM_ACTION = "https://docs.google.com/forms/d/e/1FAIpQLScVs2wf3GT4z0r__saPNSZKgQwgJdULPya85YlXWvRMfSsWAA/formResponse";
-const ENTRY = {
-  name: "entry.178235110",  // お名前
-  q1:   "entry.2004179028", // Q1 初デートの場所
-  q2:   "entry.1795097920", // Q2 新婦の手料理
-  q3:   "entry.1039771443", // Q3 付き合うきっかけ
-  q4:   "entry.1732628946", // Q4 ハネムーン
-  q5:   "entry.1720191206"  // Q5 新婦の好きなところ
+/* ===== Googleフォーム連携設定 ===== */
+/* クイズ用フォーム（名前＋第1問〜第10問、11ページ） */
+const QUIZ_FORM = {
+  action: "https://docs.google.com/forms/d/e/1FAIpQLSdAFFk24pUGKVtx4RHVpMdSXgKofk_-XKUq784UOIC9LTO0qw/formResponse",
+  name: "entry.1147305893",
+  entries: [
+    "entry.255388641",  // 第1問
+    "entry.1791143091", // 第2問
+    "entry.795446734",  // 第3問
+    "entry.118695384",  // 第4問
+    "entry.1636061687", // 第5問
+    "entry.883132054",  // 第6問
+    "entry.612739454",  // 第7問
+    "entry.1174654339", // 第8問
+    "entry.633267418",  // 第9問
+    "entry.1363924360"  // 第10問
+  ],
+  pageHistory: "0,1,2,3,4,5,6,7,8,9,10"
+};
+/* 予想用フォーム（名前＋予想、1ページ） */
+const PRED_FORM = {
+  action: "https://docs.google.com/forms/d/e/1FAIpQLScLpoVfv_zUhA5plt0ZJd3qyD9OMbwLQUvja0Wi_afbKZeExg/formResponse",
+  name: "entry.1335687347",
+  entry: "entry.504448424",
+  pageHistory: "0"
 };
 
-/* ===== 問題（お題を差し替える時はフォーム側も同時に直す） ===== */
-const QUESTIONS = [
-  { key:"q1", text:"新郎新婦の初デートの場所は？",            choices:["水族館","映画館","カフェ","遊園地"] },
-  { key:"q2", text:"新婦の手料理で新郎が一番好きなのは？",    choices:["カレー","肉じゃが","オムライス","パスタ"] },
-  { key:"q3", text:"二人が付き合うきっかけになったのは？",    choices:["友人の紹介","職場","学校","アプリ"] },
-  { key:"q4", text:"ハネムーンで行きたい場所は？",            choices:["ハワイ","沖縄","ヨーロッパ","北海道"] },
-  { key:"q5", text:"新郎が新婦の好きなところを一言で言うと？", choices:["笑顔","優しさ","料理上手","明るさ"] }
-];
-
-const answers = { name:"", q1:"", q2:"", q3:"", q4:"", q5:"" };
-let current = 0; // 0..4 = 質問番号
+const state = {
+  name: "",
+  quiz: Array(10).fill(""),
+  pred: "",
+  submitted: { quiz:false, pred:false },
+  quizIndex: 0,
+  confirmTarget: null // "quiz" | "pred"
+};
 
 const $ = (id) => document.getElementById(id);
-const screens = ["screen-name","screen-q","screen-confirm","screen-done"];
+const screens = ["screen-name","screen-menu","screen-quiz","screen-pred","screen-confirm","screen-done"];
 function show(id){
   screens.forEach(s => $(s).classList.toggle("hidden", s !== id));
   window.scrollTo(0,0);
 }
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
 
-/* 名前入力 */
+/* 名前 */
+try { state.name = localStorage.getItem("wg_name") || ""; } catch(e) {}
+if (state.name) { $("guest-name").value = state.name; $("btn-start").disabled = false; }
 $("guest-name").addEventListener("input", (e) => {
-  answers.name = e.target.value.trim();
-  $("btn-start").disabled = answers.name.length === 0;
+  state.name = e.target.value.trim();
+  $("btn-start").disabled = state.name.length === 0;
 });
-$("btn-start").addEventListener("click", () => { current = 0; renderQuestion(); });
+$("btn-start").addEventListener("click", () => {
+  try { localStorage.setItem("wg_name", state.name); } catch(e) {}
+  renderMenu();
+});
+function renderMenu(){
+  $("menu-who").textContent = state.name + " さん";
+  $("badge-quiz").textContent = state.submitted.quiz ? "　✓ 送信済み" : "";
+  $("badge-pred").textContent = state.submitted.pred ? "　✓ 送信済み" : "";
+  show("screen-menu");
+}
+$("btn-go-quiz").addEventListener("click", () => { state.quizIndex = 0; renderQuiz(); });
+$("btn-go-pred").addEventListener("click", renderPred);
 
-/* 質問画面 */
-function renderQuestion(){
-  const q = QUESTIONS[current];
-  $("q-progress").textContent = "Q" + (current + 1) + " / 5";
-  $("q-text").textContent = q.text;
-  const box = $("q-choices");
+/* クイズ */
+function renderQuiz(){
+  const i = state.quizIndex;
+  $("quiz-progress").textContent = "第" + (i + 1) + "問 / 10";
+  const box = $("quiz-choices");
   box.innerHTML = "";
-  q.choices.forEach(choice => {
+  ["A","B","C"].forEach(choice => {
     const b = document.createElement("button");
-    b.className = "choice" + (answers[q.key] === choice ? " selected" : "");
+    b.className = "choice" + (state.quiz[i] === choice ? " selected" : "");
     b.textContent = choice;
     b.addEventListener("click", () => {
-      answers[q.key] = choice;
-      if (current < QUESTIONS.length - 1) { current++; renderQuestion(); }
-      else { renderConfirm(); }
+      state.quiz[i] = choice;
+      if (i < 9) { state.quizIndex++; renderQuiz(); }
+      else { state.confirmTarget = "quiz"; renderConfirm(); }
     });
     box.appendChild(b);
   });
-  show("screen-q");
+  show("screen-quiz");
 }
-$("btn-back").addEventListener("click", () => {
-  if (current === 0) { show("screen-name"); }
-  else { current--; renderQuestion(); }
+$("btn-quiz-back").addEventListener("click", () => {
+  if (state.quizIndex === 0) { renderMenu(); }
+  else { state.quizIndex--; renderQuiz(); }
 });
 
-/* 確認画面 */
+/* 予想 */
+function renderPred(){
+  const box = $("pred-choices");
+  box.innerHTML = "";
+  ["0問","1問","2問","3問","4問","5問"].forEach(choice => {
+    const b = document.createElement("button");
+    b.className = "choice" + (state.pred === choice ? " selected" : "");
+    b.textContent = choice;
+    b.addEventListener("click", () => {
+      state.pred = choice;
+      state.confirmTarget = "pred";
+      renderConfirm();
+    });
+    box.appendChild(b);
+  });
+  show("screen-pred");
+}
+$("btn-pred-back").addEventListener("click", renderMenu);
+
+/* 確認 */
 function renderConfirm(){
-  const lines = QUESTIONS.map((q,i) =>
-    "<b>Q" + (i+1) + "</b> " + escapeHtml(answers[q.key])
-  ).join("<br>");
-  $("confirm-summary").innerHTML =
-    "<b>お名前</b> " + escapeHtml(answers.name) + "<br>" + lines;
+  let html = "<b>お名前</b> " + escapeHtml(state.name) + "<br>";
+  if (state.confirmTarget === "quiz") {
+    html += state.quiz.map((a,i) => "<b>第" + (i+1) + "問</b> " + escapeHtml(a)).join("<br>");
+  } else {
+    html += "<b>予想</b> " + escapeHtml(state.pred);
+  }
+  $("confirm-summary").innerHTML = html;
   show("screen-confirm");
 }
-$("btn-fix").addEventListener("click", () => { current = 0; renderQuestion(); });
+$("btn-fix").addEventListener("click", () => {
+  if (state.confirmTarget === "quiz") { state.quizIndex = 0; renderQuiz(); }
+  else { renderPred(); }
+});
 
-/* 送信（隠しiframeへPOST。Google側の応答ページが読み込まれたら完了画面へ） */
-let submitted = false;
+/* 送信（隠しiframeへPOST） */
+let submitting = false;
 $("btn-submit").addEventListener("click", () => {
   const form = $("gform");
-  form.action = FORM_ACTION;
   form.innerHTML = "";
-  const fields = [
-    [ENTRY.name, answers.name],
-    [ENTRY.q1, answers.q1], [ENTRY.q2, answers.q2], [ENTRY.q3, answers.q3],
-    [ENTRY.q4, answers.q4], [ENTRY.q5, answers.q5],
-    /* 複数ページのフォームでは全ページを通過した扱いにしないと
-       2ページ目以降の回答が保存されないため必須 */
-    ["pageHistory", "0,1,2,3,4,5"],
-    ["fvv", "1"]
-  ];
+  let fields;
+  if (state.confirmTarget === "quiz") {
+    form.action = QUIZ_FORM.action;
+    fields = [[QUIZ_FORM.name, state.name]];
+    QUIZ_FORM.entries.forEach((entry, i) => fields.push([entry, state.quiz[i]]));
+    fields.push(["pageHistory", QUIZ_FORM.pageHistory], ["fvv", "1"]);
+  } else {
+    form.action = PRED_FORM.action;
+    fields = [
+      [PRED_FORM.name, state.name],
+      [PRED_FORM.entry, state.pred],
+      ["pageHistory", PRED_FORM.pageHistory], ["fvv", "1"]
+    ];
+  }
   fields.forEach(([name, value]) => {
     const input = document.createElement("input");
     input.type = "hidden"; input.name = name; input.value = value;
     form.appendChild(input);
   });
-  submitted = true;
+  submitting = true;
   form.submit();
-  /* 応答が返らない環境向けの保険：4秒後にも完了画面を出す */
-  setTimeout(() => { if (submitted) show("screen-done"); }, 4000);
+  setTimeout(() => { if (submitting) finishSubmit(); }, 4000);
 });
-$("gform-target").addEventListener("load", () => {
-  if (submitted) show("screen-done");
-});
-
-function escapeHtml(s){
-  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+$("gform-target").addEventListener("load", () => { if (submitting) finishSubmit(); });
+function finishSubmit(){
+  submitting = false;
+  if (state.confirmTarget === "quiz") state.submitted.quiz = true;
+  if (state.confirmTarget === "pred") state.submitted.pred = true;
+  $("done-note").textContent = state.confirmTarget === "quiz"
+    ? "クイズの回答を受け付けました。結果発表をお楽しみに！"
+    : "予想を受け付けました。結果発表をお楽しみに！";
+  show("screen-done");
 }
+$("btn-to-menu").addEventListener("click", renderMenu);
 </script>
 </body>
 </html>
