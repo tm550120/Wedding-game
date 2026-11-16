@@ -82,7 +82,7 @@ export const SUBMIT = {
 export const HOST = {
   // 集計用 Apps Script ウェブアプリの URL（https://script.google.com/macros/s/…/exec）。
   // 空のままだと司会画面は「未設定」の案内を表示する。設定手順は README.md の「司会画面」を参照。
-  statsUrl: "",
+  statsUrl: "https://script.google.com/macros/s/AKfycbzBHCykKSa5ZCUgvMJnNfgk9oq0z_R99E7ZRp8ki_jjGs2-094TuIGJO5Covbeiz8I5/exec",
   // 何ミリ秒ごとに集計を取りに行くか
   pollMs: 3000,
   // この時間（ミリ秒）応答がなければ、その回は失敗として扱う（前回の表示は残す）
