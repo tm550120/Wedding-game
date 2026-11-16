@@ -1,0 +1,57 @@
+/*
+ * 司会画面（host.html）専用のスタイル。色とフォントは style.css のものを使う。
+ * 16:9 のプロジェクター投影を想定し、大きさは画面の高さ（vh）基準で決める。
+ */
+body.host{
+  height:100vh; min-height:0; overflow:hidden;
+  display:grid; grid-template-rows:auto 1fr auto; align-items:stretch;
+  padding:4vh 5vw 2.5vh; gap:2.5vh;
+}
+
+/* ---- 上段: 問題名と回答人数 ---- */
+.host-head{ display:flex; justify-content:space-between; align-items:flex-end; border-bottom:1px solid rgba(201,162,39,.55); padding-bottom:2vh; }
+.host-kicker{ margin:0 0 .5vh; color:var(--gold-light); font-size:2.8vh; letter-spacing:.2em; }
+.host-head h1{ margin:0; text-align:left; font-size:10vh; line-height:1.15; letter-spacing:.1em; }
+.host-total{ display:flex; align-items:baseline; gap:1.2vw; white-space:nowrap; }
+.host-total-label{ color:var(--gold-light); font-size:3.6vh; letter-spacing:.2em; }
+.host-total-num{ font-size:12vh; line-height:1; font-weight:700; color:var(--gold-light); font-variant-numeric:tabular-nums; min-width:1.2em; text-align:right; }
+.host-total-unit{ font-size:4.5vh; }
+
+/* ---- 中段: 横棒グラフ。行数（3 または 6）は --rows で受け取り、文字の大きさを合わせる ---- */
+.bars{ --rows:3; --fs:min(11vh, calc(42vh / var(--rows))); display:flex; flex-direction:column; justify-content:space-evenly; min-height:0; }
+.bar-row{ display:grid; grid-template-columns:calc(var(--fs) * 1.9) 1fr calc(var(--fs) * 3.8); align-items:center; gap:2vw; }
+.bar-label{ font-size:var(--fs); font-weight:700; text-align:center; letter-spacing:.05em; white-space:nowrap; }
+.bar-track{ height:calc(var(--fs) * 1.25); background:rgba(255,255,255,.07); border:1px solid rgba(201,162,39,.35); border-radius:calc(var(--fs) * .2); overflow:hidden; }
+.bar-fill{
+  height:100%; width:0;
+  background:linear-gradient(90deg, #a8841a 0%, var(--gold) 55%, var(--gold-light) 100%);
+  border-radius:inherit;
+  transition:width .8s cubic-bezier(.22,.8,.3,1);
+}
+.bar-count{ font-size:var(--fs); font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.bar-count small{ font-size:.42em; font-weight:400; color:var(--gold-light); margin-left:.25em; }
+.bar-count .bar-pct{ margin-left:.9em; }
+/* 将来の正解発表用: 行に .correct / .dimmed を付けるだけで強調できるようにしてある（いまは未使用） */
+.bar-row.dimmed{ opacity:.35; transition:opacity .6s ease; }
+.bar-row.correct .bar-track{ box-shadow:0 0 0 .4vh var(--paper); }
+
+/* ---- 下段: 問題の切り替えと通信状態（司会者向けなので控えめに） ---- */
+.host-foot{ display:flex; justify-content:space-between; align-items:center; gap:2vw; }
+.host-nav{ display:flex; gap:.6vw; flex-wrap:wrap; }
+.host-nav button{
+  appearance:none; cursor:pointer; font-family:inherit; font-size:2.2vh;
+  min-width:4.4vh; height:4.4vh; padding:0 1.2vh; border-radius:2.2vh;
+  border:1px solid rgba(201,162,39,.55); background:none; color:var(--gold-light);
+}
+.host-nav button.current{ background:var(--gold); border-color:var(--gold); color:#fff; }
+.host-nav button:focus-visible{ outline:2px solid var(--paper); outline-offset:2px; }
+.host-status{ display:flex; align-items:center; gap:1.2vw; font-size:2.2vh; color:#d9d2ba; white-space:nowrap; }
+.host-updated{ font-variant-numeric:tabular-nums; letter-spacing:.08em; }
+.badge{ padding:.6vh 1.4vh; border-radius:2vh; font-size:2vh; max-width:42vw; overflow:hidden; text-overflow:ellipsis; }
+.badge-demo{ border:1px solid var(--gold-light); color:var(--gold-light); }
+.badge-error{ border:1px solid rgba(255,170,140,.6); color:#ffd9cc; }
+
+/* ---- 未設定の案内 ---- */
+.host-setup{ max-width:70vw; align-self:center; justify-self:center; padding:5vh 4vw; font-size:3vh; line-height:1.9; text-align:center; }
+.host-setup h2{ margin:0 0 2vh; font-size:5vh; letter-spacing:.1em; color:var(--gold-light); }
+.host-setup code, .host-setup a{ color:var(--gold-light); }

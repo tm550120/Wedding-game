@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>司会画面｜クイズ＆以心伝心ゲーム 回答状況</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/host.css">
+</head>
+<body class="host">
+  <header class="host-head">
+    <div>
+      <p class="host-kicker">✦ <span id="view-kicker"></span> ✦</p>
+      <h1 id="view-title"></h1>
+    </div>
+    <div class="host-total">
+      <span class="host-total-label">回答</span>
+      <span class="host-total-num" id="total">0</span>
+      <span class="host-total-unit">人</span>
+    </div>
+  </header>
+
+  <!-- 選択肢ごとの横棒（js/host.js が生成） -->
+  <main class="bars" id="bars"></main>
+
+  <!-- Apps Script の URL が未設定のときの案内 -->
+  <section class="card host-setup hidden" id="setup">
+    <h2>集計用URLが未設定です</h2>
+    <p><code>js/config.js</code> の <code>HOST.statsUrl</code> に、Apps Script ウェブアプリの URL（…/exec）を設定してください。<br>
+      手順は README.md の「司会画面」にあります。</p>
+    <p>画面の見た目だけ確認するには <a href="?demo=1">host.html?demo=1</a> を開いてください（ダミーの数字が増えていきます）。</p>
+  </section>
+
+  <footer class="host-foot">
+    <nav class="host-nav" id="nav" aria-label="表示する問題"></nav>
+    <div class="host-status">
+      <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字）</span>
+      <span class="badge badge-error hidden" id="badge-error" role="status"></span>
+      <span class="host-updated" id="updated">最終更新 --:--:--</span>
+    </div>
+  </footer>
+
+  <script type="module" src="js/host.js"></script>
+</body>
+</html>

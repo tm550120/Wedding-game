@@ -75,3 +75,19 @@ export const SUBMIT = {
   // この時間（ミリ秒）応答がなければ失敗として扱い、もう一度送信してもらう
   timeoutMs: 15000,
 };
+
+/*
+ * 司会画面（host.html）の設定。ゲスト用の回答ページはこの値を使わない。
+ */
+export const HOST = {
+  // 集計用 Apps Script ウェブアプリの URL（https://script.google.com/macros/s/…/exec）。
+  // 空のままだと司会画面は「未設定」の案内を表示する。設定手順は README.md の「司会画面」を参照。
+  statsUrl: "",
+  // 何ミリ秒ごとに集計を取りに行くか
+  pollMs: 3000,
+  // この時間（ミリ秒）応答がなければ、その回は失敗として扱う（前回の表示は残す）
+  timeoutMs: 8000,
+  // "fetch" : 通常はこちら。
+  // "jsonp" : fetch で取得できない環境向けの予備（<script> タグで読み込む）。
+  transport: "fetch",
+};
