@@ -1,7 +1,7 @@
 /*
  * 司会画面（host.html）専用のスタイル。色とフォントは style.css のものを使う。
  * 16:9 のプロジェクター投影を想定し、大きさは画面の高さ（vh）基準で決める。
- * スライドの画像を全面に映し、その上に「受付の状態と人数」「正解」「予想の結果」「司会者向けの小さな案内」を重ねる。
+ * スライドの画像を全面に映し、その上に「受付の状態と人数」「正解」「予想の結果」「うまくいっていないときの知らせ」を重ねる。
  */
 body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block; background:#000; cursor:pointer; }
 
@@ -107,13 +107,10 @@ body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block
 /* ---- 司会者向けの小さな表示（下端。会場からは目立たない大きさにする） ---- */
 .host-foot{
   position:fixed; left:0; right:0; bottom:0; z-index:50; pointer-events:none;
-  display:flex; justify-content:space-between; align-items:center; gap:2vw;
+  display:flex; justify-content:flex-end; align-items:center;
   padding:1vh 1.5vw; font-size:1.9vh; color:#d9d2ba; text-shadow:0 0 .6vh #000, 0 0 .6vh #000;
 }
-.host-hint{ margin:0; letter-spacing:.08em; opacity:.8; white-space:nowrap; }
-.host-status{ display:flex; align-items:center; gap:1.2vw; white-space:nowrap; }
-.badge{ padding:.5vh 1.4vh; border-radius:2vh; font-size:1.9vh; max-width:55vw; overflow:hidden; text-overflow:ellipsis; background:rgba(11,36,27,.85); }
-.badge-demo{ border:1px solid var(--gold-light); color:var(--gold-light); }
+.badge{ padding:.5vh 1.4vh; border-radius:2vh; font-size:1.9vh; max-width:70vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:rgba(11,36,27,.85); }
 .badge-error{ border:1px solid rgba(255,170,140,.6); color:#ffd9cc; }
 
 /* ---- 未設定の案内 ---- */

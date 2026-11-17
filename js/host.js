@@ -36,7 +36,7 @@ import { panelSlides } from "./host-panel.js";
 import { createPoller } from "./poller.js";
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate, revealRequest } from "./gate.js";
 import { autoCloseSeconds, countdownView } from "./countdown.js";
-import { PRED_START, matchedCountOf, predStep, stepPred, predHint, namesLayout, nameScale } from "./pred-result.js";
+import { PRED_START, matchedCountOf, predStep, stepPred, hitsNote, namesLayout, nameScale } from "./pred-result.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -232,17 +232,6 @@ function tweenNumber(node, to) {
 
 const STATUS_TEXT = { ready: "受付前", open: "回答受付中", closed: "締め切り" };
 
-/** 司会者向けの、次の操作の案内（左下に小さく出す）。 */
-function hintFor(target, view) {
-  if (!target) return "";
-  if (!backend?.setOpen) return "表示のみ（司会キーがないので、受付は切り替えられません）";
-  if (!state.gateKnown) return "受付状態を確認中…";
-  if (view === "ready") return "→ 受付開始";
-  if (view === "open") return "→ 締め切る" + (countdown ? "（時間切れで自動的に締め切り）" : "");
-  if (state.revealed) return "→ 次へ ／ ← 正解を隠す";
-  return (isQuestion(target) ? "→ 正解を表示" : "→ 次へ") + " ／ O 受付を再開";
-}
-
 /** 「予想結果」のスライドの表示。step: いま映す段（"input" / "count" / "names"）。このスライドでなければ null。 */
 function renderPredResult(step) {
   $("pred-prompt").classList.toggle("hidden", step !== "input");
@@ -294,7 +283,10 @@ function render() {
   const showMessage = current ? !current.loaded : state.waitingForSlides;
   $("stage-message").classList.toggle("hidden", !showMessage);
   $("stage-message").textContent = current?.failed ? "スライドの画像を読み込めません（再試行中）" : "スライドを読み込み中…";
-  $("hint").textContent = predView ? predHint(state.pred, state.hits) : hintFor(target, view);
+  // 次の操作の案内は出さない。出すのは、うまくいっていないときの知らせだけ（右下）:
+  // 司会キーがなくて受付を切り替えられない / 予想結果のスライドで名前を映せない
+  setError("key", target && !backend?.setOpen ? "表示のみ（司会キーがないので、受付は切り替えられません）" : "");
+  setError("pred", predView ? hitsNote(state.hits, state.pred.n) : "");
 
   // 受付の状態と人数（問題のスライドのときだけ）
   $("gate").classList.toggle("hidden", !target);
@@ -716,8 +708,6 @@ function initControls() {
 }
 
 /* ===== 起動 ===== */
-
-if (DEMO) $("badge-demo").classList.remove("hidden");
 
 if (!backend) {
   $("setup").classList.remove("hidden");

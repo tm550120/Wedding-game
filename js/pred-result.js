@@ -68,7 +68,7 @@ export function stepPred(pred, action, hits) {
   return { pred, leave: null };
 }
 
-/** 名前を映せない理由（司会者にだけ知らせる）。映せるとき・まだ数を入れていないときは ""。 */
+/** 名前を映せない理由（司会者向けに、右下に小さく出す）。映せるとき・まだ数を入れていないときは ""。 */
 export function hitsNote(hits, n) {
   if (n === null || !hits || hits.n !== n) return "";
   switch (hits.status) {
@@ -83,16 +83,6 @@ export function hitsNote(hits, n) {
     default:
       return "";
   }
-}
-
-/** 司会者向けの、次の操作の案内（左下に小さく出す）。 */
-export function predHint(pred, hits) {
-  const step = predStep(pred, hits);
-  const range = "0〜" + PRED_MAX;
-  if (step === "input") return `そろった数を ${range} のキーで入力 ／ → 入力せずに次へ`;
-  if (step === "names") return `→ 次へ ／ ← 戻る ／ ${range} で入力し直す`;
-  const note = hitsNote(hits, pred.n);
-  return (note ? `→ 次へ ／ ${range} で入力し直す ／ ${note}` : `→ 的中した人を表示 ／ ${range} で入力し直す`);
 }
 
 /**

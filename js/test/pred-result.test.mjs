@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { PRED_START, PRED_MAX, matchedCountOf, namesReady, predStep, stepPred, hitsNote, predHint, normalizePredHits, namesLayout, nameWidth, nameScale } =
+const { PRED_START, PRED_MAX, matchedCountOf, namesReady, predStep, stepPred, hitsNote, normalizePredHits, namesLayout, nameWidth, nameScale } =
   await import("../pred-result.js");
 const { panelSlides } = await import("../host-panel.js");
 const { createDemoBackend } = await import("../host-demo.js");
@@ -97,7 +97,7 @@ test("success: 次のスライドから ← で戻ってきたら、発表した
   assert.equal(predStep(stepPred({ n: 3, step: "count" }, "return", { n: 3, status: "nokey" }).pred, { n: 3, status: "nokey" }), "count");
 });
 
-test("success: 司会者への案内（名前を映せない理由を含む）", () => {
+test("success: 名前を映せない理由（司会者への知らせ）", () => {
   assert.equal(hitsNote({ n: 3, status: "nokey" }, 3), "名前を表示するには司会キーが必要です");
   assert.equal(hitsNote({ n: 3, status: "unsupported" }, 3), "名前を表示するには Apps Script を更新してください");
   assert.match(hitsNote({ n: 3, status: "error" }, 3), /名前を取得できません/);
@@ -106,14 +106,7 @@ test("success: 司会者への案内（名前を映せない理由を含む）",
   assert.equal(hitsNote(loading(3), 3), "");
   assert.equal(hitsNote({ n: 2, status: "nokey" }, 3), ""); // 前の数の結果
   assert.equal(hitsNote(null, null), "");
-
-  assert.match(predHint(PRED_START, null), /0〜5 のキーで入力/);
-  assert.match(predHint({ n: 3, step: "count" }, ok(3)), /→ 的中した人を表示/);
-  assert.match(predHint({ n: 3, step: "count" }, { n: 3, status: "nokey" }), /→ 次へ.*司会キーが必要です/);
-  assert.match(predHint({ n: 3, step: "count" }, { n: 3, status: "unsupported" }), /Apps Script を更新してください/);
-  assert.match(predHint({ n: 3, step: "names" }, ok(3)), /^→ 次へ ／ ← 戻る/);
-  // 案内に名前は入れない
-  assert.ok(!predHint({ n: 3, step: "names" }, ok(3, ["山田 太郎"])).includes("山田"));
+  assert.equal(hitsNote(null, 3), "");
 });
 
 test("success: normalizePredHits は応答の形を確かめる", () => {
