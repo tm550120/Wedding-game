@@ -110,9 +110,8 @@ body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block
   display:flex; justify-content:space-between; align-items:center; gap:2vw;
   padding:1vh 1.5vw; font-size:1.9vh; color:#d9d2ba; text-shadow:0 0 .6vh #000, 0 0 .6vh #000;
 }
-.host-hint{ margin:0; display:flex; gap:1.4vw; letter-spacing:.08em; opacity:.8; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.host-hint{ margin:0; letter-spacing:.08em; opacity:.8; white-space:nowrap; }
 .host-status{ display:flex; align-items:center; gap:1.2vw; white-space:nowrap; }
-.host-updated{ font-variant-numeric:tabular-nums; letter-spacing:.08em; opacity:.6; }
 .badge{ padding:.5vh 1.4vh; border-radius:2vh; font-size:1.9vh; max-width:55vw; overflow:hidden; text-overflow:ellipsis; background:rgba(11,36,27,.85); }
 .badge-demo{ border:1px solid var(--gold-light); color:var(--gold-light); }
 .badge-error{ border:1px solid rgba(255,170,140,.6); color:#ffd9cc; }

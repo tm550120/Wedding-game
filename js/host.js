@@ -294,7 +294,6 @@ function render() {
   const showMessage = current ? !current.loaded : state.waitingForSlides;
   $("stage-message").classList.toggle("hidden", !showMessage);
   $("stage-message").textContent = current?.failed ? "スライドの画像を読み込めません（再試行中）" : "スライドを読み込み中…";
-  $("slide-pos").textContent = current ? state.slide + 1 + " / " + state.slides.length : "";
   $("hint").textContent = predView ? predHint(state.pred, state.hits) : hintFor(target, view);
 
   // 受付の状態と人数（問題のスライドのときだけ）
@@ -638,16 +637,9 @@ async function refreshAnswers() {
 
 /* ===== 人数と受付状態の定期更新 ===== */
 
-function formatTime(value) {
-  const d = new Date(value);
-  const date = Number.isNaN(d.getTime()) ? new Date() : d;
-  return [date.getHours(), date.getMinutes(), date.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
-}
-
 /** 取得できた人数と受付状態を画面に反映する。epoch は、その取得を始めたときの gateEpoch。 */
 function applyStats({ stats, epoch }) {
   state.stats = stats;
-  $("updated").textContent = "最終更新 " + formatTime(stats.updatedAt);
   // Code.gs 側の設定ミス（タブ名の間違いなど）は errors で届く。名前は含まれない
   setError("stats", Array.isArray(stats.errors) && stats.errors.length > 0 ? "設定エラー: " + stats.errors.join(" / ") : "");
   setError("gateApi", stats.state ? "" : "Apps Script が古いままです（受付の切り替えには Code.gs の更新と再デプロイが必要）");

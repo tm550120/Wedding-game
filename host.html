@@ -64,13 +64,12 @@
     <p>画面の流れだけ確認するには <a href="?demo=1">host.html?demo=1</a> を開いてください（仮のスライドとダミーの数字で動きます）。</p>
   </section>
 
-  <!-- 司会者向けの小さな表示: いま何枚目か・次の操作・通信の状態 -->
+  <!-- 司会者向けの小さな表示: 次の操作・通信の状態 -->
   <footer class="host-foot">
-    <p class="host-hint"><span id="slide-pos"></span><span id="hint"></span></p>
+    <p class="host-hint" id="hint"></p>
     <div class="host-status">
       <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字・正解・名前）</span>
       <span class="badge badge-error hidden" id="badge-error" role="status"></span>
-      <span class="host-updated" id="updated"></span>
     </div>
   </footer>
 
