@@ -117,8 +117,8 @@ function load({ sheets = {}, slides = [], props = { SLIDES_DECK_ID: DECK_ID, HOS
 /* ===== シートの行 ===== */
 
 const T0 = new Date(2026, 10, 23, 19, 0, 0).getTime();
-const QUIZ_SHEET = "フォームの回答 1";
-const PRED_SHEET = "フォームの回答 2";
+const QUIZ_SHEET = "クイズ回答";
+const PRED_SHEET = "予想回答";
 const QUIZ_HEADER = ["タイムスタンプ", "お名前", ...Array.from({ length: 10 }, (_, i) => `第${i + 1}問`)];
 const PRED_HEADER = ["タイムスタンプ", "お名前", "新郎新婦の答えは何問そろいますか？"];
 /** T0 から sec 秒後に記録された、第 no 問への回答の行。 */
