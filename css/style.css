@@ -71,7 +71,6 @@ button.choice.selected:disabled{ opacity:1; }
   border:1px solid rgba(255,170,140,.6); border-radius:10px;
   padding:12px 12px; margin:16px 0 0;
 }
-.error a{ color:var(--gold-light); }
 
 /* ---- 4択クイズ: 選択肢を 2×2 に並べる（config.js の choiceColumns: 2） ---- */
 .choices.cols-2{ display:grid; grid-template-columns:1fr 1fr; }

@@ -199,7 +199,6 @@ function render() {
   $("btn-submit").disabled = !draft || sending;
   $("btn-submit").textContent = sending ? "送信中…" : failed ? "もう一度送信する" : "送信する";
   $("submit-error").classList.toggle("hidden", !failed || sending);
-  if (section) $("submit-error-link").href = section.fallback.url;
   $("live-notice").classList.toggle("hidden", !trouble);
 }
 

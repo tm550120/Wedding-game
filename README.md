@@ -136,7 +136,6 @@ python3 -m http.server 8000
 | `choices` | 選択肢。**フォームに送る値そのもの** なので、フォーム側の選択肢と完全に一致させる（`A` `B` `C` `D` は半角、予想は `0問`〜`5問`）。フォームに無い値を送ると、その回答は黙って捨てられる |
 | `choiceColumns` | 選択肢のボタンを横に並べる数。`2` にすると 2×2 に並ぶ（4択用）。省略すると縦1列 |
 | `progressLabel` / `answerLabel` | 「第1問 / 10」「第1問」などの表示 |
-| `fallback` | 送信に失敗したときに案内する、フォームへの直接リンク（`url`） |
 | `form.action` | フォームの送信先URL（`.../formResponse`） |
 | `form.nameEntry` | 名前の項目の entry ID |
 | `form.answerEntries` | 回答の項目の entry ID。**この個数が問題数** になり、並び順が第1問、第2問…に対応する |
