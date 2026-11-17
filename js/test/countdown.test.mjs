@@ -65,12 +65,12 @@ test("guestRemaining: およその残り秒数。分からないときは null�
 
 test("revealRequest: 正解を映すときは idle を頼む。すでに待ち受けなら頼まない", () => {
   const closed = reduceGate(reduceGate(EMPTY_GATE, "q2"), "none");
-  assert.deepEqual(closed, { open: null, lastClosed: "q2", done: ["q2"], rev: 2 });
+  assert.deepEqual(closed, { open: null, lastClosed: "q2", done: ["q2"], rev: 2, results: false });
   assert.equal(revealRequest(closed), "idle");
   // ほかの問題が開いたまま正解に戻ってきたときも idle（その問題は締め切られる）
   assert.equal(revealRequest(reduceGate(closed, "q3")), "idle");
   const idle = reduceGate(closed, revealRequest(closed));
-  assert.deepEqual(idle, { open: null, lastClosed: null, done: ["q2"], rev: 3 });
+  assert.deepEqual(idle, { open: null, lastClosed: null, done: ["q2"], rev: 3, results: false });
   assert.equal(revealRequest(idle), null);
   assert.equal(revealRequest(EMPTY_GATE), null);
 });

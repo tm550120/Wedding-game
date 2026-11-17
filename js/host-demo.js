@@ -6,7 +6,7 @@
  *   - 正解もダミー。「予想結果」「ランキング」のスライドに出る名前も架空のもの
  * 返す形は本物（apps-script/Code.gs → js/host-api.js）と同じにしてある。
  */
-import { ALL_TARGETS, EMPTY_GATE, parseTarget, readDemoGate, reduceGate, writeDemoGate } from "./gate.js";
+import { ALL_TARGETS, EMPTY_GATE, parseTarget, readDemoGate, reduceGate, revealGate, writeDemoGate } from "./gate.js";
 import { placeholderImage, predResultSlide, prizeSlide, rankingSlide, targetSlide } from "./host-panel.js";
 import { PRED_MAX } from "./pred-result.js";
 import { RANK_MAX_LIMIT, normalizeRanking, rankGroups } from "./ranking.js";
@@ -100,6 +100,12 @@ export function createDemoBackend() {
         : Promise.reject(Object.assign(new Error("limit は 1〜30 の整数です"), { code: "bad_request" })),
     setOpen(target) {
       gate = reduceGate(gate, target);
+      writeDemoGate(gate);
+      return later(gate, 200);
+    },
+    // 各自の成績の公開（index.html?demo=1 が、架空の成績を出す）
+    revealResults() {
+      gate = revealGate(gate);
       writeDemoGate(gate);
       return later(gate, 200);
     },

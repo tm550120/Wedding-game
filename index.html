@@ -32,6 +32,13 @@
     <ol class="topics hidden" id="live-topics" aria-label="以心伝心ゲームのお題"></ol>
     <div class="choices" id="live-choices"></div>
     <p class="note live-note" id="live-note"></p>
+    <!-- 自分のクイズの成績（司会画面が「ランキング」のスライドに来たあと、終了の画面にだけ出る。中身は js/app.js） -->
+    <div class="my-result hidden" id="live-result">
+      <p class="my-result-heading" id="result-heading"></p>
+      <p class="my-result-score" id="result-score"></p>
+      <p class="my-result-rank" id="result-rank"></p>
+      <p class="my-result-tied hidden" id="result-tied"></p>
+    </div>
     <p class="error hidden" id="submit-error" role="alert">送信できませんでした。<br>電波を確認して、もう一度お試しください。</p>
     <button class="primary hidden" id="btn-submit" disabled>送信する</button>
     <p class="notice hidden" id="live-notice" role="status">通信が不安定です。自動でつなぎ直しています…</p>

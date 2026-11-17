@@ -16,7 +16,8 @@
  * このスライドでは受付を開けない（ゲストのスマホは「お待ちください」のまま）。
  *
  * 「ランキング」のスライド（kind: "ranking"）では、クイズの正解数が多い順に、→ を押すたびに順位の組を1つずつ映す
- * （下の順位から始めて、1位が最後。進み方は js/ranking.js）。このスライドでは受付状態を変えない
+ * （下の順位から始めて、1位が最後。進み方は js/ranking.js）。このスライドでは受付を開け閉めしない
+ * （来たときに、各自の成績をゲストのスマホに出せるよう公開だけする。requestResults）
  * （ゲストのスマホは、それまでの表示のまま）。数字キーでも問題へは飛ばない。
  *
  * ランキングのスライドのすぐ後ろに「N位の景品」のスライド（kind: "prize"）が続いているときは、N位を映したあとに
@@ -38,7 +39,7 @@
  * 正解と名前は司会キーで取得して、この画面のメモリにだけ持つ。
  */
 import { HOST } from "./config.js";
-import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, fetchPredHits, fetchRanking, sendSetOpen, isFatal } from "./host-api.js";
+import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, fetchPredHits, fetchRanking, sendSetOpen, sendRevealResults, isFatal } from "./host-api.js";
 import { createDemoBackend } from "./host-demo.js";
 import { panelSlides } from "./host-panel.js";
 import { createPoller } from "./poller.js";
@@ -64,7 +65,7 @@ const net = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
 
 /*
  * Apps Script とのやり取り一式。null なら未設定。
- * loadSlides / loadAnswers / loadPredHits / loadRanking / setOpen は司会キーが要るので、キーがなければ null（表示のみになる）。
+ * loadSlides / loadAnswers / loadPredHits / loadRanking / setOpen / revealResults は司会キーが要るので、キーがなければ null（表示のみになる）。
  */
 const backend = DEMO
   ? createDemoBackend()
@@ -77,6 +78,7 @@ const backend = DEMO
         loadPredHits: hostKey ? (n) => fetchPredHits(HOST.statsUrl, hostKey, n, net) : null,
         loadRanking: hostKey ? (limit) => fetchRanking(HOST.statsUrl, hostKey, limit, net) : null,
         setOpen: hostKey ? (target) => sendSetOpen(HOST.statsUrl, hostKey, target, net) : null,
+        revealResults: hostKey ? () => sendRevealResults(HOST.statsUrl, hostKey, net) : null,
       };
 const loadSlides = PANEL_ONLY ? null : backend?.loadSlides || null;
 
@@ -227,6 +229,46 @@ async function pumpGate() {
   gateEpoch++;
   render();
   kickPoll(true);
+}
+
+/*
+ * 各自の成績の公開。「ランキング」のスライドに来たら、ゲストのスマホに各自の成績（「10問中 7問正解」「23人中 8位」）を
+ * 出せるよう、Apps Script に公開を頼む（?action=revealResults）。ランキングの表示とは別に進めるので、
+ * 失敗しても・時間がかかっても、ランキングの発表は止まらない。通信エラーは間隔をあけて送り直す。
+ * すでに公開済みなら何も送らない。受付を開けると公開は取り消される（Code.gs）ので、次に来たときにまた頼む。
+ */
+let revealingResults = false;
+let resultsGaveUp = false; // 待っても直らない失敗（Code.gs が古い・キー違い）。この画面を開いている間は、もう頼まない
+let resultsNote = ""; // 司会者への知らせ（ランキングのスライドでだけ出す）
+
+async function requestResults() {
+  if (revealingResults || resultsGaveUp || !backend?.revealResults || !writable() || state.gate.results || state.gate.open) return;
+  revealingResults = true;
+  let wait = 0;
+  while (!state.gate.results && !state.gate.open) {
+    if (writing) {
+      // 受付の切り替えを送っている途中なら、それが済んでから（順番が入れ替わらないように）
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      continue;
+    }
+    try {
+      const gate = await backend.revealResults();
+      gateEpoch++; // この前に始めた取得の結果（公開する前の受付状態）は使わない
+      // その間に受付の切り替えを始めていたら、先に変えてある表示はそのままにして、公開したことだけ覚える
+      state.gate = writing ? { ...state.gate, results: !state.gate.open } : gate;
+      break;
+    } catch (e) {
+      if (isFatal(e)) {
+        resultsGaveUp = true;
+        resultsNote = e.code === "unsupported" ? "各自の成績をスマホに出すには Apps Script を更新してください" : "各自の成績を公開できません: " + e.message;
+        break;
+      }
+      wait = Math.min((wait || 500) * 2, 8000);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+  revealingResults = false;
+  render();
 }
 
 /* ===== 表示 ===== */
@@ -395,6 +437,7 @@ function render() {
   setError("key", target && !backend?.setOpen ? "表示のみ（司会キーがないので、受付は切り替えられません）" : "");
   setError("pred", predView ? hitsNote(state.hits, state.pred.n) : "");
   setError("rank", rankView !== null ? rankNote(state.ranking, QUESTION_COUNT) : "");
+  setError("results", rankView !== null ? resultsNote : "");
 
   // 受付の状態と人数（問題のスライドのときだけ）
   $("gate").classList.toggle("hidden", !target);
@@ -489,6 +532,9 @@ function goTo(index, how) {
       requestGate("idle"); // 普通のスライドでは何も受け付けない（ゲストは「お待ちください」になる）
     }
   }
+
+  // 「ランキング」のスライドに来たら、各自の成績をゲストのスマホに出せるようにする（応答は待たない）
+  if (isRanking(state.slides[next])) requestResults();
 
   history.replaceState(null, "", "#s" + (next + 1)); // 再読み込みしても同じスライドに戻る
   // 次の2枚は先に展開しておき、切り替えた瞬間に映るようにする
@@ -845,6 +891,8 @@ function applyStats({ stats, epoch }) {
   if (stats.state && epoch === gateEpoch && !writing) {
     state.gate = stats.state;
     state.gateKnown = true;
+    // 「ランキング」のスライドを開いたまま再読み込みしたとき・公開がまだのときは、ここで頼む（公開済みなら何もしない）
+    if (isRanking(state.slides[state.slide])) requestResults();
   }
   render();
 }

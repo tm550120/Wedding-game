@@ -9,6 +9,7 @@
  *   closed     … 直前の問題が締め切られた（「締め切りました」）。司会画面が正解を映すと waiting に変わる
  *   waiting    … 何も受け付けていない（「次の問題をお待ちください」）
  *   finished   … 予想を締め切ったあと、何も受け付けていない（「ご参加ありがとうございました！」。文言は config.js の GATE）
+ *                司会画面が「ランキング」のスライドに来たあとは、その下に自分の成績（「10問中 7問正解」「23人中 8位」）も出す
  *   connecting … 受付状態が分からない（まだ読めていない / しばらく読めていない）。回答ボタンは出さない
  * ゲストが自分で問題を選ぶことはできない。クイズも予想も、config.js の SECTIONS の定義で同じコードが動く。
  *
@@ -24,6 +25,7 @@ import { submitAnswer } from "./submit.js";
 import { loadName, saveName, loadSent, saveSent, updateAllSent } from "./storage.js";
 import { fetchGate, guestMode, parseTarget, pruneSent, readDemoGate } from "./gate.js";
 import { autoCloseSeconds, guestRemaining, trackOpen } from "./countdown.js";
+import { fetchMyResult, resultLines, resultRetryDelay, RESULT_JITTER_MS } from "./my-result.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -42,6 +44,16 @@ const loadGate = DEMO
     ? () => fetchGate(HOST.statsUrl, { timeoutMs: GATE.timeoutMs, transport: HOST.transport })
     : null;
 
+/**
+ * 自分のクイズの成績の取得方法（…/exec?action=myResult&name=名前）。デモでは架空の成績を返す。
+ * 読みに行くのは、受付状態の results が true になってから（Code.gs が古ければ true にならないので、何も読まない）。
+ */
+const loadResult = DEMO
+  ? () => new Promise((resolve) => setTimeout(() => resolve({ ready: true, found: true, correct: 7, total: 10, rank: 8, tied: 3, participants: 23 }), 300))
+  : HOST.statsUrl
+    ? (name) => fetchMyResult(HOST.statsUrl, name, { timeoutMs: GATE.timeoutMs, transport: HOST.transport })
+    : null;
+
 /** 回答の送信。デモでは Google フォームへ送らず、少し待って成功したことにする。 */
 const send = DEMO
   ? () => new Promise((resolve) => setTimeout(resolve, 400))
@@ -58,6 +70,7 @@ const state = {
   gateAt: 0,          // それを読めた時刻
   failures: 0,        // 受付状態の取得に続けて失敗した回数
   openSeen: null,     // 受付が開いたのをいつ見たか（js/countdown.js の trackOpen）。残り時間の目安に使う
+  result: null,       // 自分のクイズの成績（js/my-result.js の normalizeMyResult の形）。まだ読めていなければ null
 };
 
 /* ===== 状態の読み取り ===== */
@@ -139,8 +152,10 @@ function render() {
   const sending = state.sending.has(target);
   const failed = mode === "question" && !sent && state.failed.has(target);
   const trouble = !loadGate || state.failures >= (mode === "connecting" ? 1 : 2);
+  // 自分の成績は、終了の画面でだけ出す（まだ読めていない・その名前の回答が無いときは null で、何も足さない）
+  const result = mode === "finished" ? resultLines(state.result) : null;
 
-  const signature = JSON.stringify([mode, target, sent, draft, sending, failed, trouble]);
+  const signature = JSON.stringify([mode, target, sent, draft, sending, failed, trouble, result]);
   if (signature === lastSignature) return;
   lastSignature = signature;
 
@@ -170,6 +185,15 @@ function render() {
   setLines($("live-prompt"), prompt);
   setLines($("live-note"), note);
   $("live-note").classList.toggle("hidden", note.length === 0);
+
+  $("live-result").classList.toggle("hidden", !result);
+  if (result) {
+    $("result-heading").textContent = result.heading;
+    $("result-score").textContent = result.score;
+    $("result-rank").textContent = result.rank;
+    $("result-tied").textContent = result.tied;
+    $("result-tied").classList.toggle("hidden", !result.tied);
+  }
 
   // お題の一覧（予想だけ。config.js の topics）。受付中だけ出す。空・未定義なら何も出さない
   const topics = mode === "question" && Array.isArray(section.topics) ? section.topics : [];
@@ -245,6 +269,53 @@ function reconcileSent(gate) {
   if (!DEMO) updateAllSent((sent) => pruneSent(sent, gate));
 }
 
+/*
+ * 自分のクイズの成績。受付状態の results が true になったら（司会画面が「ランキング」のスライドに来た）、1回だけ読みに行く。
+ *   - 全員が同時に読みに行かないよう、最初は 0〜RESULT_JITTER_MS のランダムな時間だけ待つ
+ *   - 失敗したら（通信エラー・まだ用意できていない）、間隔をあけて読み直す。読めたら、それ以上は読まない
+ *   - results が false に戻ったら（受付を開け直した・記録を消した）、読めた成績を捨てる。次に true になったら読み直す
+ * Code.gs が古いと results は来ない（false のまま）ので、何もしない。
+ */
+let resultTimer = null;
+let resultBusy = false;
+let resultFailures = 0;
+let resultSeq = 0; // 公開が取り消されるたびに増える。その前に始めた取得の結果を捨てるために使う
+
+function syncResult() {
+  if (!loadResult || state.gate?.results !== true) {
+    clearTimeout(resultTimer);
+    resultTimer = null;
+    resultFailures = 0;
+    if (state.result) state.result = null;
+    resultSeq++;
+    return;
+  }
+  if (state.result || resultTimer !== null || resultBusy) return;
+  resultTimer = setTimeout(loadMyResult, resultFailures > 0 ? resultRetryDelay(resultFailures) : Math.random() * (DEMO ? 500 : RESULT_JITTER_MS));
+}
+
+async function loadMyResult() {
+  resultTimer = null;
+  // 画面を閉じている間は読まない（戻ってきたら、受付状態を読めたときに syncResult が予約し直す）
+  if (resultBusy || state.result || state.gate?.results !== true || document.hidden) return;
+  const seq = resultSeq;
+  resultBusy = true;
+  try {
+    const result = await loadResult(state.name);
+    if (seq === resultSeq) {
+      if (!result.ready) throw new Error("not ready"); // 公開の直後で、まだ用意できていない
+      state.result = result;
+      resultFailures = 0;
+    }
+  } catch (e) {
+    if (seq === resultSeq) resultFailures += 1;
+  } finally {
+    resultBusy = false;
+  }
+  if (seq === resultSeq) syncResult(); // 失敗していたら、間隔をあけて読み直す
+  render();
+}
+
 let pollTimer = null;
 let pollBusy = false;
 
@@ -262,6 +333,7 @@ async function poll() {
     state.gateAt = now;
     state.failures = 0;
     reconcileSent(state.gate); // 読めたときだけ。失敗したときに残してある古い状態では直さない
+    syncResult();
   } catch (e) {
     state.failures += 1; // つながらない・Apps Script が古い など。間隔をあけて読み直す
   } finally {

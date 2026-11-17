@@ -94,6 +94,12 @@ button.choice.selected:disabled{ opacity:1; }
 #screen-live[data-mode="waiting"] .progress,
 #screen-live[data-mode="connecting"] .progress{ font-size:30px; color:var(--gold); animation:wait-pulse 2s ease-in-out infinite; }
 @keyframes wait-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
+/* 自分のクイズの成績（終了の画面で、ランキングの発表が始まったあとに出る） */
+.my-result{ margin:22px 0 0; padding:16px 12px 18px; border:1px solid var(--gold); border-radius:12px; text-align:center; }
+.my-result-heading{ font-size:14px; letter-spacing:.2em; color:var(--gold-light); margin:0 0 10px; }
+.my-result-score{ font-size:26px; line-height:1.4; color:var(--gold); margin:0; font-variant-numeric:tabular-nums; }
+.my-result-rank{ font-size:22px; line-height:1.4; margin:6px 0 0; font-variant-numeric:tabular-nums; }
+.my-result-tied{ font-size:14px; color:#d9d2ba; margin:2px 0 0; }
 /* 締め切りまでのおよその残り時間（目安。送信はこの表示では止めない） */
 .countdown{ text-align:center; font-size:14px; letter-spacing:.12em; color:var(--gold-light); margin:-10px 0 16px; font-variant-numeric:tabular-nums; }
 .notice{ font-size:13px; line-height:1.7; text-align:center; color:#ffd9cc; margin:18px 0 0; }

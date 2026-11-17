@@ -2,17 +2,19 @@
  * 受付状態（いま、どの問題の回答を受け付けているか）。回答ページと司会画面の両方で使う。
  *
  * 受付の対象（target）: "q1"〜"q10" = クイズの第1問〜第10問、"pred" = 以心伝心ゲーム予想
- * 受付状態（gate）: { open, lastClosed, done, rev }
+ * 受付状態（gate）: { open, lastClosed, done, rev, results }
  *   open       … いま受け付けている対象。無ければ null
  *   lastClosed … 直前に締め切った対象（回答ページに「締め切りました」と出す）。待ち受け中は null
  *   done       … 一度受付を開けて、いまは閉じている対象の一覧
  *   rev        … 状態が変わるたびに 1 増える番号
+ *   results    … 各自のクイズの成績を公開しているか（司会画面が「ランキング」のスライドに来ると true。
+ *                回答ページは、これを見て自分の成績を読みに行く）。Code.gs が古くてこの値を返さないときは false
  * 本物の状態は Apps Script（apps-script/Code.gs）が持ち、司会画面だけが切り替えられる。
  */
 import { SECTIONS } from "./config.js";
 import { loadJson } from "./net.js";
 
-export const EMPTY_GATE = Object.freeze({ open: null, lastClosed: null, done: [], rev: 0 });
+export const EMPTY_GATE = Object.freeze({ open: null, lastClosed: null, done: [], rev: 0, results: false });
 
 /** 対象の文字列を { target, section, index } にする（index は 0 始まり）。対象でなければ null。 */
 export function parseTarget(target) {
@@ -71,6 +73,7 @@ export function normalizeGate(raw) {
     lastClosed: valid(raw.lastClosed),
     done: Array.isArray(raw.done) ? raw.done.filter(parseTarget) : [],
     rev: Number(raw.rev) || 0,
+    results: raw.results === true,
   };
 }
 
@@ -93,14 +96,21 @@ export function reduceGate(gate, target) {
     lastClosed = open;
     open = null;
   }
+  let results = gate.results === true;
   if (wanted && open !== wanted) {
     done = done.filter((t) => t !== wanted);
     open = wanted;
     lastClosed = null;
+    results = false; // 受付を開けたら、成績の公開は取り消す
   }
   if (target === "idle") lastClosed = null;
   const same = open === gate.open && lastClosed === gate.lastClosed;
-  return same ? gate : { open, lastClosed, done, rev: gate.rev + 1 };
+  return same ? gate : { open, lastClosed, done, rev: gate.rev + 1, results };
+}
+
+/** 各自の成績を公開したあとの状態を返す（Code.gs の revealResults_ と同じ決まり。デモ表示で使う）。すでに公開していれば、そのまま。 */
+export function revealGate(gate) {
+  return gate.results === true ? gate : { ...gate, rev: gate.rev + 1, results: true };
 }
 
 /**

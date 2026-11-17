@@ -12,6 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import crypto from "node:crypto";
 
 const CODE = fs.readFileSync(new URL("../Code.gs", import.meta.url), "utf8");
 const DECK_ID = "DECK-ID-SECRET-1234567890";
@@ -44,13 +45,24 @@ const slide = (objectId, elements, skipped = false) => ({
 /** Code.gs を、偽物のサービスを持つ新しい環境に読み込む。 */
 function load({ sheets = {}, slides = [], props = { SLIDES_DECK_ID: DECK_ID, HOST_KEY }, thumbnail } = {}) {
   const store = new Map();
-  const calls = { thumbnails: [], opened: [], locks: 0 };
+  const calls = { thumbnails: [], opened: [], locks: 0, sheetReads: 0 };
   const env = {
     calls,
     props,
+    sheets,
     cacheStore: store,
     Logger: { log: () => {} },
-    Utilities: { getUuid: () => "00000000-1111-2222-3333-444444444444" },
+    Utilities: {
+      getUuid: () => "00000000-1111-2222-3333-444444444444",
+      DigestAlgorithm: { SHA_256: "SHA_256" },
+      Charset: { UTF_8: "UTF_8" },
+      // 本物と同じく、符号付きのバイト（-128〜127）の配列を返す
+      computeDigest: (algorithm, text, charset) => {
+        assert.deepEqual([algorithm, charset], ["SHA_256", "UTF_8"]);
+        return [...crypto.createHash("sha256").update(String(text), "utf8").digest()].map((b) => (b > 127 ? b - 256 : b));
+      },
+      base64Encode: (bytes) => Buffer.from(bytes.map((b) => (b + 256) % 256)).toString("base64"),
+    },
     ContentService: {
       MimeType: { JSON: "JSON", JAVASCRIPT: "JAVASCRIPT" },
       createTextOutput: (text) => ({ text, mime: null, setMimeType(m) { this.mime = m; return this; } }),
@@ -74,7 +86,9 @@ function load({ sheets = {}, slides = [], props = { SLIDES_DECK_ID: DECK_ID, HOS
       }),
     },
     SpreadsheetApp: {
-      openById: () => ({ getSheetByName: (name) => (sheets[name] ? { getDataRange: () => ({ getValues: () => sheets[name] }) } : null) }),
+      openById: () => ({
+        getSheetByName: (name) => (sheets[name] ? { getDataRange: () => ({ getValues: () => ((calls.sheetReads += 1), sheets[name]) }) } : null),
+      }),
       getActiveSpreadsheet: () => null,
     },
     SlidesApp: {
@@ -134,7 +148,7 @@ const ANSWER_SHEET = [["問題番号", "正解"], [1, "B"], ["2", "ｄ"], ["第3
 
 test("success: 受付状態の初期値は「何も受け付けていない」", () => {
   const state = load().get({ action: "state" });
-  assert.deepEqual({ ...state }, { open: null, lastClosed: null, done: [], rev: 0, updatedAt: null });
+  assert.deepEqual({ ...state }, { open: null, lastClosed: null, done: [], rev: 0, updatedAt: null, results: false });
 });
 
 test("success: setOpen で開ける → none で締め切る → idle で待ち受けに戻る", () => {
@@ -296,10 +310,10 @@ test("success: 公開する応答には、名前・正解・選択肢ごとの�
   assert.deepEqual(Object.keys(stats.quiz), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
   assert.deepEqual({ ...stats.quiz["1"] }, { total: 1 });
   assert.deepEqual({ ...stats.pred }, { total: 1 });
-  assert.deepEqual(Object.keys(stats.state).sort(), ["done", "lastClosed", "open", "rev", "updatedAt"]);
-  assert.deepEqual(Object.keys(env.get({ action: "state" })).sort(), ["done", "lastClosed", "open", "rev", "updatedAt"]);
+  assert.deepEqual(Object.keys(stats.state).sort(), ["done", "lastClosed", "open", "results", "rev", "updatedAt"]);
+  assert.deepEqual(Object.keys(env.get({ action: "state" })).sort(), ["done", "lastClosed", "open", "results", "rev", "updatedAt"]);
 
-  for (const params of [{}, { action: "state" }, { action: "answers" }, { action: "slides" }, { action: "unknown" }]) {
+  for (const params of [{}, { action: "state" }, { action: "answers" }, { action: "slides" }, { action: "unknown" }, { action: "myResult", name: "山田太郎" }, { action: "revealResults" }]) {
     const text = env.raw(params);
     for (const secret of ["山田", "正解", "answers", "windows", DECK_ID, HOST_KEY, String(T0)]) assert.ok(!text.includes(secret), JSON.stringify(params) + " " + secret);
     assert.ok(!/"[A-D]"/.test(text), "選択肢の文字を含まない: " + JSON.stringify(params));
@@ -500,6 +514,12 @@ function rankEnv(rows, answers = answerSheet()) {
   return env;
 }
 const ranking = (env, limit) => env.get({ action: "ranking", key: HOST_KEY, limit });
+/** rankEnv のあと、成績を公開した環境。 */
+function rankEnvRevealed(rows, answers) {
+  const env = rankEnv(rows, answers);
+  env.get({ action: "revealResults", key: HOST_KEY });
+  return env;
+}
 /** 組を [順位, 正解数, 名前…] の配列にする。 */
 const groupsOf = (res) => res.groups.map((g) => [g.place, g.score, ...g.names]);
 const cutoffOf = (res) => (res.cutoff ? [res.cutoff.place, res.cutoff.slots, ...res.cutoff.names] : null);
@@ -688,12 +708,12 @@ test("success: 司会キーのない応答には、どの呼び出しでも名�
   const env = rankEnv(scoreSheet(SEVEN));
   assert.equal(ranking(env, "5").groups.length, 3); // 司会キー付きで取得したあとでも、キャッシュなどから漏れない
   const names = [...Object.keys(SEVEN), "予想だけの人"];
-  const actions = [undefined, "state", "ranking", "predHits", "answers", "slides", "setOpen", "reset", "unknown"];
+  const actions = [undefined, "state", "ranking", "predHits", "answers", "slides", "setOpen", "reset", "revealResults", "myResult", "unknown"];
   for (const action of actions) {
-    for (const extra of [{}, { limit: "5" }, { limit: "5", key: "wrong" }, { limit: "5", key: "" }, { limit: "5", callback: "cb" }]) {
+    for (const extra of [{}, { limit: "5" }, { limit: "5", key: "wrong" }, { limit: "5", key: "" }, { limit: "5", callback: "cb" }, { name: "あおき" }]) {
       const text = env.raw({ action, ...extra });
       for (const who of names) assert.ok(!text.includes(who), JSON.stringify({ action, ...extra }) + " " + who);
-      assert.ok(!/names|groups|cutoff|score|answered/.test(text), JSON.stringify({ action, ...extra }));
+      assert.ok(!/names|groups|cutoff|score|answered|correct|rank"/.test(text), JSON.stringify({ action, ...extra }));
     }
   }
   for (const value of env.cacheStore.values()) for (const who of names) assert.ok(!String(value).includes(who));
@@ -711,6 +731,195 @@ test("success: 司会キーのない応答には、どの呼び出しでも名�
   const jsonp = env.doGet({ parameter: { action: "ranking", key: HOST_KEY, limit: "1", callback: "cb1" } });
   assert.equal(jsonp.mime, "JAVASCRIPT");
   assert.match(jsonp.text, /^cb1\(\{.*"groups":\[\{"place":1,"score":9,"names":\["あおき"\]\}\],"cutoff":null\}\);$/);
+});
+
+/* ===== 各自の成績（?action=revealResults / ?action=myResult） ===== */
+
+const reveal = (env) => env.get({ action: "revealResults", key: HOST_KEY });
+const myResult = (env, name) => env.get({ action: "myResult", name });
+/** 成績の応答を [正解数, 採点した問題数, 順位, 同点の人数, 対象の人数] にする。 */
+const resultOf = (res) => [res.correct, res.total, res.rank, res.tied, res.participants];
+
+test("success: myResult は公開するまで ready: false で、シートも読まない", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  assert.equal(env.get({ action: "state" }).results, false);
+  const reads = env.calls.sheetReads;
+  for (const name of ["あおき", "いない人", "", undefined]) assert.deepEqual({ ...myResult(env, name) }, { ok: true, ready: false });
+  assert.equal(env.calls.sheetReads, reads);
+});
+
+test("success: revealResults で公開する（何度呼んでも同じ）/ state の results が true になる", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  const before = env.get({ action: "state" }).rev;
+  const res = reveal(env);
+  assert.equal(res.ok, true);
+  assert.deepEqual([res.state.results, res.state.rev, res.state.open], [true, before + 1, null]);
+  assert.equal(env.get({ action: "state" }).results, true); // ゲストが読む状態にもすぐ反映される
+  assert.equal(env.get().state.results, true);
+  const again = reveal(env);
+  assert.deepEqual([again.ok, again.state.results, again.state.rev], [true, true, before + 1]);
+  assert.deepEqual([...again.state.done].sort(), [...res.state.done].sort()); // 受付の記録は変わらない
+  assert.equal(ranking(env, "5").total, 7);
+  assert.equal(env.calls.locks, 0);
+  // キャッシュが消えても、公開したことはスクリプト プロパティから読める
+  env.cacheStore.clear();
+  assert.equal(env.get({ action: "state" }).results, true);
+});
+
+test("success: myResult の数字は ranking と同じ決まり（順位 = 1 + 自分より正解数が多い人の数。同点は同じ順位）", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  reveal(env);
+  // [9, 8, 8, 7, 7, 7, 5] → 1位, 2位×2, 4位×3, 7位
+  assert.deepEqual({ ...myResult(env, "あおき") }, { ok: true, ready: true, found: true, correct: 9, total: 10, rank: 1, tied: 1, participants: 7 });
+  assert.deepEqual(resultOf(myResult(env, "いとう")), [8, 10, 2, 2, 7]);
+  assert.deepEqual(resultOf(myResult(env, "うえの")), [8, 10, 2, 2, 7]);
+  assert.deepEqual(resultOf(myResult(env, "かとう")), [7, 10, 4, 3, 7]);
+  assert.deepEqual(resultOf(myResult(env, "きむら")), [5, 10, 7, 1, 7]);
+  // ranking の応答と突き合わせる（組の順位・正解数・人数、対象の人数）
+  const full = ranking(env, "30");
+  assert.equal(full.cutoff, null);
+  let seen = 0;
+  for (const group of full.groups) {
+    for (const name of group.names) {
+      assert.deepEqual(resultOf(myResult(env, name)), [group.score, full.answered.length, group.place, group.names.length, full.total], name);
+      seen += 1;
+    }
+  }
+  assert.equal(seen, 7);
+});
+
+test("success: myResult は 0問正解の人も対象。全員同点なら全員 1位", () => {
+  const env = rankEnv(scoreSheet({ あ: 0, い: 0, う: 0 }));
+  reveal(env);
+  for (const name of ["あ", "い", "う"]) assert.deepEqual(resultOf(myResult(env, name)), [0, 10, 1, 3, 3]);
+});
+
+test("success: myResult は名前のゆれ（全角/半角・空白）を集計と同じようにならして探す", () => {
+  const env = rankEnv([...scoreRows("山田　太郎", 6), ...scoreRows("ABC", 3), answerRow(" ａｂｃ ", 4, "A", 20)]);
+  reveal(env);
+  // 「ABC」と「 ａｂｃ 」は別の人（大文字と小文字は区別する。集計と同じ）
+  assert.deepEqual(resultOf(myResult(env, "山田 太郎")), [6, 10, 1, 1, 3]);
+  assert.deepEqual(resultOf(myResult(env, "  山田   太郎 ")), [6, 10, 1, 1, 3]);
+  assert.deepEqual(resultOf(myResult(env, "ＡＢＣ")), [3, 10, 2, 1, 3]);
+  assert.deepEqual(resultOf(myResult(env, "abc")), [1, 10, 3, 1, 3]);
+  assert.equal(ranking(env, "30").total, 3);
+});
+
+test("success: myResult は同じ名前 × 同じ問題の最新の回答と、受付時間内の回答だけを採点する（ranking と同じ）", () => {
+  const env = rankEnv([
+    answerRow("変更", 1, "A", 10),
+    answerRow("変更", 1, "B", 20), // 送り直して不正解に
+    answerRow("変更", 2, "B", 10),
+    answerRow("変更", 2, "A", 20), // 送り直して正解に
+    quizRow(50, "時間外", 1, "A"), // 第1問の受付（100秒〜）より前
+    answerRow("時間外", 2, "B"),
+    quizRow(1500, "締切後", 3, "A"), // すべて締め切ったあと
+    answerRow("", 1, "A"), // 名前が空の行は対象にしない
+  ]);
+  reveal(env);
+  assert.deepEqual(resultOf(myResult(env, "変更")), [1, 10, 1, 1, 2]);
+  assert.deepEqual(resultOf(myResult(env, "時間外")), [0, 10, 2, 1, 2]);
+  assert.deepEqual({ ...myResult(env, "締切後") }, { ok: true, ready: true, found: false, total: 10, participants: 2 });
+  assert.deepEqual(groupsOf(ranking(env, "30")), [[1, 1, "変更"], [2, 0, "時間外"]]);
+});
+
+test("success: myResult は答えていない名前・空の名前には found: false（数字は返さない）", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  reveal(env);
+  for (const name of ["いない人", "予想だけの人", "", "   ", undefined, "あおき".repeat(100), "__proto__", "constructor", "row:1"]) {
+    assert.deepEqual({ ...myResult(env, name) }, { ok: true, ready: true, found: false, total: 10, participants: 7 }, String(name));
+  }
+});
+
+test("success: myResult の total は、正解が書かれた問題の数", () => {
+  const env = rankEnv(scoreSheet({ あ: 5, い: 2 }), answerSheet("A", [1, 2, 3]));
+  reveal(env);
+  assert.deepEqual(resultOf(myResult(env, "あ")), [3, 3, 1, 1, 2]);
+  assert.deepEqual(resultOf(myResult(env, "い")), [2, 3, 2, 1, 2]);
+});
+
+test("success: 全員分の成績はキャッシュに置き、何人が読みに来てもシートを読むのは1回だけ（名前はキャッシュに置かない）", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  const before = env.calls.sheetReads;
+  reveal(env); // 公開したときに作っておく（「正解」タブとクイズのシートを1回ずつ読む）
+  assert.equal(env.calls.sheetReads, before + 2);
+  for (let i = 0; i < 30; i++) for (const name of Object.keys(SEVEN)) assert.equal(myResult(env, name).found, true);
+  myResult(env, "いない人");
+  assert.equal(env.calls.sheetReads, before + 2);
+  for (const value of env.cacheStore.values()) for (const who of Object.keys(SEVEN)) assert.ok(!String(value).includes(who));
+  // キャッシュが消えたら作り直す（1回だけ）
+  env.cacheStore.clear();
+  assert.deepEqual(resultOf(myResult(env, "あおき")), [9, 10, 1, 1, 7]);
+  assert.deepEqual(resultOf(myResult(env, "きむら")), [5, 10, 7, 1, 7]);
+  assert.equal(env.calls.sheetReads, before + 4);
+  assert.equal(env.calls.locks, 0);
+});
+
+test("success: reset すると公開は取り消され、myResult は ready: false に戻る", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  reveal(env);
+  assert.equal(myResult(env, "あおき").found, true);
+  const res = env.get({ action: "reset", key: HOST_KEY });
+  assert.equal(res.state.results, false);
+  assert.equal(env.get({ action: "state" }).results, false);
+  assert.deepEqual({ ...myResult(env, "あおき") }, { ok: true, ready: false });
+  // 公開し直しても、リハーサルの回答（記録を消す前の受付時間）は数えない
+  reveal(env);
+  assert.deepEqual({ ...myResult(env, "あおき") }, { ok: true, ready: true, found: false, total: 10, participants: 0 });
+  env.resetGame();
+  assert.deepEqual({ ...myResult(env, "あおき") }, { ok: true, ready: false });
+});
+
+test("success: 受付を開けると公開は取り消される（締め切る・待ち受けに戻すだけでは変わらない）。公開し直すと新しい回答も入る", () => {
+  const rows = scoreSheet({ あ: 5, い: 2 });
+  const env = rankEnv(rows);
+  reveal(env);
+  assert.equal(env.setOpen("none", 2010).state.results, true);
+  assert.equal(env.setOpen("idle", 2020).state.results, true);
+  assert.deepEqual(resultOf(myResult(env, "い")), [2, 10, 2, 1, 2]);
+  const opened = env.setOpen("q3", 2100).state;
+  assert.deepEqual([opened.open, opened.results], ["q3", false]);
+  assert.deepEqual({ ...myResult(env, "い") }, { ok: true, ready: false });
+  env.sheets[QUIZ_SHEET].push(quizRow(2110, "い", 3, "A")); // 開け直した第3問に正解
+  env.setOpen("none", 2200);
+  assert.equal(env.get({ action: "state" }).results, false);
+  reveal(env);
+  assert.deepEqual(resultOf(myResult(env, "い")), [3, 10, 2, 1, 2]); // 前の表（キャッシュ）は使わない
+});
+
+test("failed: revealResults は司会キーが違う・無いときは公開しない", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  for (const key of [undefined, "", "wrong", HOST_KEY + "x"]) {
+    assert.equal(env.get({ action: "revealResults", key }).error, "unauthorized");
+  }
+  assert.equal(env.get({ action: "state" }).results, false);
+  assert.deepEqual({ ...myResult(env, "あおき") }, { ok: true, ready: false });
+  const noKey = rankEnv(scoreSheet(SEVEN));
+  delete noKey.props.HOST_KEY;
+  assert.equal(noKey.get({ action: "revealResults", key: "" }).error, "not_configured");
+});
+
+test("failed: 「正解」タブやクイズのシートを読めなければ myResult は result_error（公開はできる。キャッシュには置かない）", () => {
+  const noAnswers = rankEnv(scoreSheet(SEVEN), null);
+  assert.equal(reveal(noAnswers).state.results, true);
+  assert.deepEqual(Object.keys(myResult(noAnswers, "あおき")).sort(), ["error", "message"]);
+  assert.equal(myResult(noAnswers, "あおき").error, "result_error");
+  assert.equal(myResult(rankEnvRevealed(scoreSheet(SEVEN), [["問題番号", "正解"]]), "あおき").error, "result_error");
+  // 直れば、次に読みに来たときに返る
+  noAnswers.sheets["正解"] = answerSheet();
+  assert.deepEqual(resultOf(myResult(noAnswers, "あおき")), [9, 10, 1, 1, 7]);
+  assert.equal(noAnswers.calls.locks, 0);
+});
+
+test("success: myResult は JSONP でも返せる / 応答は数字だけの小さな JSON", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  reveal(env);
+  const jsonp = env.doGet({ parameter: { action: "myResult", name: "いとう", callback: "cb1" } });
+  assert.equal(jsonp.mime, "JAVASCRIPT");
+  assert.equal(jsonp.text, 'cb1({"ok":true,"ready":true,"found":true,"correct":8,"total":10,"rank":2,"tied":2,"participants":7});');
+  const text = env.raw({ action: "myResult", name: "いとう" });
+  assert.ok(text.length < 120);
+  for (const who of Object.keys(SEVEN)) assert.ok(!text.includes(who));
 });
 
 test("success: testRanking は順位ごとの人数だけをログに出す（名前は出さない）", () => {

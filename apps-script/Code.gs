@@ -8,7 +8,11 @@
  *         { "updatedAt": "…", "quiz": { "1": {"total": 9}, …, "10": {"total": 0} }, "pred": {"total": 9},
  *           "state": { "open": "q5", "lastClosed": null, "done": ["q1","q2"], "rev": 12, "updatedAt": "…" } }
  *     …/exec?action=state   → 受付状態だけ（ゲストの回答ページが2〜3秒ごとに読む）
- *         { "open": "q5" | "pred" | null, "lastClosed": "q4" | null, "done": [...], "rev": 12, "updatedAt": "…" }
+ *         { "open": "q5" | "pred" | null, "lastClosed": "q4" | null, "done": [...], "rev": 12, "updatedAt": "…", "results": false }
+ *         results は、司会画面が「ランキング」のスライドに来て、各自の成績を公開したら true（revealResults）
+ *     …/exec?action=myResult&name=名前 → その名前の人のクイズの成績（公開するまでは { "ok": true, "ready": false }）
+ *         { "ok": true, "ready": true, "found": true, "correct": 7, "total": 10, "rank": 8, "tied": 3, "participants": 23 }
+ *         （返すのは数字だけ。ほかの人の名前は返さない。詳しくは下の「各自の成績」を参照）
  *
  *   司会キーが合うときだけ（&key=司会キー）
  *     …/exec?action=setOpen&target=q5|pred|none|idle → 受付の切り替え。{ "ok": true, "state": {…} }
@@ -21,7 +25,8 @@
  *                                                        "groups": [{ "place": 1, "score": 9, "names": ["…"] }, …],
  *                                                        "cutoff": { "place": 4, "slots": 2, "names": ["…", "…", "…"] } | null }
  *                                                      （名前を返すのは predHits と ranking だけ）
- *     …/exec?action=reset                            → 受付の記録をすべて消す（リハーサルのあと）
+ *     …/exec?action=revealResults                    → 各自の成績を公開する（「ランキング」のスライドに来たとき）。{ "ok": true, "state": {…} }
+ *     …/exec?action=reset                            → 受付の記録をすべて消す（リハーサルのあと。成績の公開も取り消す）
  *
  *   どれも ?callback=関数名 を付けると JSONP で返す（fetch が使えない環境向けの予備）。
  *
@@ -114,6 +119,8 @@ function doGet(e) {
   const params = (e && e.parameter) || {};
   // ゲスト全員が2〜3秒ごとに読むので、いちばん先に返す
   if (params.action === "state") return respond_(getPublicStateJson_(), params.callback);
+  if (params.action === "myResult") return respond_(JSON.stringify(buildMyResultResponse_(params)), params.callback);
+  if (params.action === "revealResults") return respond_(JSON.stringify(handleRevealResults_(params)), params.callback);
   if (params.action === "setOpen") return respond_(JSON.stringify(handleSetOpen_(params)), params.callback);
   if (params.action === "answers") return respond_(JSON.stringify(buildAnswersResponse_(params)), params.callback);
   if (params.action === "reset") return respond_(JSON.stringify(handleReset_(params)), params.callback);
@@ -318,19 +325,12 @@ function sortNames_(names) {
 }
 
 /**
- * クイズの成績の順位。集計と同じ決まり（受付時間内・同じ名前 × 同じ問題は最新の行だけ）で選んだ回答を、
- * answers（問題番号 → 正解。正解が書かれた問題だけ）と比べて、正解数の多い順に並べる。
- *
- *   - 対象は、受付時間内に1問でも答えた人（0問正解の人も含む）。名前が空の行は、誰か分からないので含めない
- *   - 同じ正解数の人は同じ順位。順位 = 1 + 自分より正解数が多い人の数（1位, 2位, 2位, 4位, …）
- *   - 上から順に、人数の合計が limit（景品の数）に届くまでの組を返す
- *   - limit をまたぐ組（同点で、全員は入れない組）は cutoff にも入れる。slots はその組に残っている枠の数
- *     例: 正解数 [9, 8, 8, 7, 7, 7, 5]・limit 5 → 1位(1人) 2位(2人) 4位(3人)。cutoff は 4位の3人で、slots は 2
- *   - 名前は、その人のいちばん新しい回答の行に書かれたもの。組の中は日本語の並び順
- *
- * 返すのは { total, groups: [{ place, score, names }], cutoff: { place, slots, names } | null }。total は対象の人数。
+ * クイズの採点。集計と同じ決まり（受付時間内・同じ名前 × 同じ問題は最新の行だけ）で選んだ回答を、
+ * answers（問題番号 → 正解。正解が書かれた問題だけ）と比べる。返すのは 回答者キー → { name, ts, score }。
+ * 対象は、受付時間内に1問でも答えた人（0問正解の人も含む）。名前が空の行は、誰か分からないので含めない。
+ * 順位の一覧（quizRanking_）と、各自の成績（resultTable_）の両方がこれを使う（数字が食い違わないように）。
  */
-function quizRanking_(rows, windows, answers, limit) {
+function quizScores_(rows, windows, answers) {
   const latest = collectQuiz_(rows, windows);
   const people = {};
   for (const no in latest) {
@@ -346,6 +346,24 @@ function quizRanking_(rows, windows, answers, limit) {
       if (correct && entry.value === correct) person.score += 1;
     }
   }
+  return people;
+}
+
+/**
+ * クイズの成績の順位。集計と同じ決まり（受付時間内・同じ名前 × 同じ問題は最新の行だけ）で選んだ回答を、
+ * answers（問題番号 → 正解。正解が書かれた問題だけ）と比べて、正解数の多い順に並べる。
+ *
+ *   - 対象は、受付時間内に1問でも答えた人（0問正解の人も含む）。名前が空の行は、誰か分からないので含めない
+ *   - 同じ正解数の人は同じ順位。順位 = 1 + 自分より正解数が多い人の数（1位, 2位, 2位, 4位, …）
+ *   - 上から順に、人数の合計が limit（景品の数）に届くまでの組を返す
+ *   - limit をまたぐ組（同点で、全員は入れない組）は cutoff にも入れる。slots はその組に残っている枠の数
+ *     例: 正解数 [9, 8, 8, 7, 7, 7, 5]・limit 5 → 1位(1人) 2位(2人) 4位(3人)。cutoff は 4位の3人で、slots は 2
+ *   - 名前は、その人のいちばん新しい回答の行に書かれたもの。組の中は日本語の並び順
+ *
+ * 返すのは { total, groups: [{ place, score, names }], cutoff: { place, slots, names } | null }。total は対象の人数。
+ */
+function quizRanking_(rows, windows, answers, limit) {
+  const people = quizScores_(rows, windows, answers);
 
   const byScore = {};
   let total = 0;
@@ -472,6 +490,8 @@ function countValues_(latestByWho, choices) {
  *   lastClosed … 直前に締め切った対象。ゲストの画面に「締め切りました」と出す。待ち受けに戻すと null
  *   done       … 一度でも受付を開けて、いまは閉じている対象の一覧（司会画面が「締め切り済み」と分かるように）
  *   rev        … 状態が変わるたびに 1 増える番号
+ *   results    … 各自のクイズの成績（?action=myResult）を公開しているか。司会画面が「ランキング」のスライドに来ると true
+ *                （revealResults）。どれかの受付を開けるか、記録を消す（reset）と false に戻る
  * 受付時間の時刻そのものは公開しない。
  */
 
@@ -480,7 +500,7 @@ function isTarget_(target) {
 }
 
 function emptyGate_() {
-  return { open: null, lastClosed: null, rev: 0, updatedAt: null, windows: {} };
+  return { open: null, lastClosed: null, rev: 0, updatedAt: null, results: false, windows: {} };
 }
 
 function readGate_() {
@@ -496,6 +516,7 @@ function readGate_() {
   if (isTarget_(saved.lastClosed)) gate.lastClosed = saved.lastClosed;
   gate.rev = Number(saved.rev) || 0;
   gate.updatedAt = typeof saved.updatedAt === "string" ? saved.updatedAt : null;
+  gate.results = saved.results === true;
   const windows = saved.windows && typeof saved.windows === "object" ? saved.windows : {};
   Object.keys(windows).forEach(function (target) {
     if (!isTarget_(target) || !Array.isArray(windows[target])) return;
@@ -514,7 +535,7 @@ function publicState_(gate) {
   const done = Object.keys(gate.windows).filter(function (target) {
     return target !== gate.open && gate.windows[target].length > 0;
   });
-  return { open: gate.open, lastClosed: gate.lastClosed, done: done, rev: gate.rev, updatedAt: gate.updatedAt };
+  return { open: gate.open, lastClosed: gate.lastClosed, done: done, rev: gate.rev, updatedAt: gate.updatedAt, results: gate.results === true };
 }
 
 function getPublicStateJson_() {
@@ -585,6 +606,7 @@ function withLock_(fn) {
  *   "none"              … 開いている受付を閉じる（ゲストには「締め切りました」と出る）
  *   "idle"              … 閉じたうえで、「締め切りました」も消して待ち受けに戻す
  * すでにその状態なら何も変えない（同じ呼び出しを繰り返しても、受付時間は増えない）。
+ * 受付を開けると、各自の成績の公開（results）は取り消す。
  */
 function setOpen_(target) {
   return withLock_(function () {
@@ -606,6 +628,7 @@ function setOpen_(target) {
       if (list.length > MAX_WINDOWS) list.splice(0, 2, [list[0][0], list[1][1]]);
       gate.open = wanted;
       gate.lastClosed = null;
+      gate.results = false; // 受付を開けたら、成績の公開は取り消す（次に「ランキング」のスライドへ来たときに公開し直す）
       changed = true;
     }
     if (target === "idle" && gate.lastClosed) {
@@ -627,7 +650,7 @@ function handleSetOpen_(params) {
   return { ok: true, state: publicState_(setOpen_(target)) };
 }
 
-/** 受付の記録（開けた・閉じた時刻）をすべて消す。リハーサルの回答を本番で数えないようにするため。 */
+/** 受付の記録（開けた・閉じた時刻）をすべて消す。リハーサルの回答を本番で数えないようにするため。成績の公開も取り消す。 */
 function resetGate_() {
   return withLock_(function () {
     const gate = emptyGate_();
@@ -793,6 +816,147 @@ function testRanking() {
   if (ranking.cutoff) {
     Logger.log("同点のため、" + ranking.cutoff.place + "位の " + ranking.cutoff.names.length + "人で残り " + ranking.cutoff.slots + "枠を決める");
   }
+}
+
+/* ===================== 各自の成績（?action=revealResults&key=司会キー / ?action=myResult&name=名前） ===================== */
+
+/*
+ * ゲストのスマホに、その人自身のクイズの成績（「10問中 7問正解」「23人中 8位」）を出すためのもの。
+ *
+ *   revealResults（司会キーが要る）… 成績を公開する。司会画面が「ランキング」のスライドに来たときに呼ぶ。
+ *       受付状態の results が true になり、ゲストのページがそれを見て myResult を読みに来る。
+ *       何度呼んでも同じ（すでに公開していれば何も変えない）。受付を開けるか reset すると、公開は取り消される。
+ *   myResult（誰でも読める）… name の人の成績。公開するまでは { ok: true, ready: false } だけを返す（シートも読まない）。
+ *       { "ok": true, "ready": true, "found": true, "correct": 7, "total": 10, "rank": 8, "tied": 3, "participants": 23 }
+ *         correct      … 正解数
+ *         total        … 採点した問題の数（「正解」タブに正解が書かれている問題。ふつうは 10）
+ *         rank         … 順位 = 1 + 自分より正解数が多い人の数（ランキングのスライドと同じ決まり）
+ *         tied         … 自分と同じ正解数の人の数（自分を含む。1 なら同点の人はいない）
+ *         participants … 対象の人数（受付時間内に1問でも答えた人。ranking の total と同じ）
+ *       その名前の回答が無ければ { "ok": true, "ready": true, "found": false, "total": 10, "participants": 23 }
+ *       集計できなければ { "error": "result_error", "message": "…" }（ゲストのページは間隔をあけて読み直す）
+ *
+ * 採点は ranking と同じ quizScores_ を使う（受付時間内・同じ名前 × 同じ問題は最新の行だけ・名前のゆれのならし方も同じ）。
+ * 全員分の表（名前のハッシュ → [正解数, 順位, 同点の人数]）をキャッシュに置くので、20〜30台が同時に読みに来ても
+ * シートを読むのは1回だけ。キャッシュのキーには受付状態の rev を入れてあり、状態が変わると作り直す。
+ * 名前を返すことはない（自分の名前を送って、数字だけを受け取る）。
+ */
+const RESULT_CACHE_SECONDS = 60;
+const RESULT_CACHE_PREFIX = "wg_results_v1_";
+const RESULT_NAME_MAX_LENGTH = 100;
+
+/**
+ * 成績の表のキー。回答者キー（"name:名前"）のハッシュ（SHA-256 の先頭 96 ビット）にして、キャッシュに名前そのものを置かない。
+ * ハッシュを作れない環境では、回答者キーをそのまま使う（成績を出せなくなるよりはよい。キャッシュはこのスクリプトしか読めない）。
+ */
+function resultKey_(who) {
+  try {
+    const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, who, Utilities.Charset.UTF_8);
+    return Utilities.base64Encode(bytes).slice(0, 16);
+  } catch (err) {
+    return who;
+  }
+}
+
+/** 成績を公開する。すでに公開していれば何も変えない。 */
+function revealResults_() {
+  return withLock_(function () {
+    const gate = readGate_();
+    if (!gate.results) {
+      gate.results = true;
+      writeGate_(gate);
+    }
+    return gate;
+  });
+}
+
+function handleRevealResults_(params) {
+  const denied = authorize_(params);
+  if (denied) return denied;
+  const gate = revealResults_();
+  try {
+    getResultTable_(gate.rev); // ゲストが読みに来る前に、全員分の表を作ってキャッシュに置いておく
+  } catch (err) {
+    /* 作れなくても公開はする（ゲストが読みに来たときに作り直す） */
+  }
+  return { ok: true, state: publicState_(gate) };
+}
+
+/**
+ * 全員分の成績の表。{ total, participants, people: { 回答者キーのハッシュ: [正解数, 順位, 同点の人数] } }。
+ * 決まりは quizRanking_ と同じ（順位 = 1 + 自分より正解数が多い人の数）。
+ */
+function resultTable_(rows, windows, answers) {
+  const people = quizScores_(rows, windows, answers);
+  const countByScore = {};
+  let participants = 0;
+  for (const who in people) {
+    participants += 1;
+    countByScore[people[who].score] = (countByScore[people[who].score] || 0) + 1;
+  }
+  const table = {};
+  for (const who in people) {
+    const score = people[who].score;
+    let above = 0;
+    for (const other in countByScore) if (Number(other) > score) above += countByScore[other];
+    table[resultKey_(who)] = [score, above + 1, countByScore[score]];
+  }
+  return { total: Object.keys(answers).length, participants: participants, people: table };
+}
+
+/** 全員分の成績の表を、キャッシュから（無ければシートを読んで作って）返す。同時に来ても作るのは1回だけ。 */
+function getResultTable_(rev) {
+  const key = RESULT_CACHE_PREFIX + rev;
+  const cache = scriptCache_();
+  const cached = function () {
+    if (!cache) return null;
+    try {
+      const hit = cache.get(key);
+      return hit ? JSON.parse(hit) : null;
+    } catch (err) {
+      return null; // 読めなければ作り直す
+    }
+  };
+  const hit = cached();
+  if (hit) return hit;
+  return withLock_(function () {
+    const again = cached(); // 待っている間に、ほかの呼び出しが作ってくれた
+    if (again) return again;
+    const answers = readAnswerKey_();
+    if (Object.keys(answers).length === 0) throw new Error("「" + ANSWER_SHEET_NAME + "」タブに正解が1つも書かれていません");
+    const table = resultTable_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME), readGate_().windows, answers);
+    if (cache) {
+      try {
+        cache.put(key, JSON.stringify(table), RESULT_CACHE_SECONDS);
+      } catch (err) {
+        /* 保存できなくても続行する */
+      }
+    }
+    return table;
+  });
+}
+
+/** ゲストのページ用。name の人の成績（数字だけ）を返す。公開するまでは ready: false。 */
+function buildMyResultResponse_(params) {
+  let state;
+  try {
+    state = JSON.parse(getPublicStateJson_());
+  } catch (err) {
+    state = null;
+  }
+  if (!state || state.results !== true) return { ok: true, ready: false };
+
+  let table;
+  try {
+    table = getResultTable_(Number(state.rev) || 0);
+  } catch (err) {
+    return { error: "result_error", message: "成績を集計できません" };
+  }
+  const name = String(params.name === null || params.name === undefined ? "" : params.name).slice(0, RESULT_NAME_MAX_LENGTH);
+  const who = normalize_(name) === "" ? "" : resultKey_(respondentKey_(name, 0));
+  const mine = who && Object.prototype.hasOwnProperty.call(table.people, who) ? table.people[who] : null;
+  if (!mine) return { ok: true, ready: true, found: false, total: table.total, participants: table.participants };
+  return { ok: true, ready: true, found: true, correct: mine[0], total: table.total, rank: mine[1], tied: mine[2], participants: table.participants };
 }
 
 /* ===================== スライド一覧（?action=slides&key=司会キー） ===================== */

@@ -7,6 +7,7 @@
  *   受付の切り替え …/exec?action=setOpen&key=司会キー&target=q5   〃
  *   予想の的中者   …/exec?action=predHits&key=司会キー&n=3        〃（名前が返るのは、これと下の ranking だけ）
  *   クイズの順位   …/exec?action=ranking&key=司会キー&limit=5     〃
+ *   成績の公開     …/exec?action=revealResults&key=司会キー       〃（ゲストのスマホに、各自の成績を出せるようにする）
  *
  * 司会キーは URL（host.html?key=…）で一度だけ受け取り、この端末の localStorage に保存する。
  * リポジトリや config.js には書かない（正解とスライドを読めて、受付を切り替えられるキーなので）。
@@ -116,5 +117,14 @@ export async function fetchRanking(url, key, limit, options) {
 /** 受付を切り替えて、切り替えたあとの受付状態を返す。target: "q1"〜"q10" / "pred" / "none" / "idle" */
 export async function sendSetOpen(url, key, target, options) {
   const data = await callWithKey(url, key, { action: "setOpen", target }, options, (d) => d.ok === true);
+  return normalizeGate(data.state);
+}
+
+/**
+ * 各自のクイズの成績を公開して（ゲストのスマホが、自分の成績を読めるようになる）、そのあとの受付状態を返す。
+ * 何度呼んでも同じ。Code.gs が古いときは人数の JSON が返るので、code: "unsupported" の例外になる。
+ */
+export async function sendRevealResults(url, key, options) {
+  const data = await callWithKey(url, key, { action: "revealResults" }, options, (d) => d.ok === true && d.state?.results === true);
   return normalizeGate(data.state);
 }
