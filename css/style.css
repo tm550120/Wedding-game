@@ -25,6 +25,12 @@ body{
   padding:26px 20px 30px;
   box-shadow:0 10px 30px rgba(0,0,0,.35);
 }
+/* 名前入力画面だけに出す英字の副題（スライドの表題と同じ文言）。390px 幅でも 1 行に収める */
+.eyebrow{
+  text-align:center; margin:0 0 10px; white-space:nowrap;
+  font-size:clamp(13px, 4.2vw, 17px); letter-spacing:.24em; text-indent:.24em;
+  color:var(--gold);
+}
 h1{ font-size:25px; text-align:center; margin:4px 0 6px; letter-spacing:.12em; font-weight:600; }
 .sub{ text-align:center; font-size:14px; color:var(--gold-light); margin:0 0 22px; letter-spacing:.08em; }
 .progress{ text-align:center; font-size:13px; color:var(--gold-light); letter-spacing:.2em; margin-bottom:14px; }
