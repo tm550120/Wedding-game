@@ -114,7 +114,7 @@ const PRED_SHEET = [["タイムスタンプ", "お名前", "新郎新婦の答�
 test("success: D を数え、quiz は A/B/C/D/total の形になる", () => {
   const env = load({
     sheets: {
-      "フォームの回答 1": [
+      "クイズ回答": [
         QUIZ_HEADER,
         quizRow(0, "山田", 1, "A"),
         quizRow(1, "佐藤", 1, "D"),
@@ -124,7 +124,7 @@ test("success: D を数え、quiz は A/B/C/D/total の形になる", () => {
         quizRow(5, "山田", 1, "D"), // 同じ人の送り直しは新しい方だけ
         quizRow(6, "山田", 2, "C"),
       ],
-      "フォームの回答 2": PRED_SHEET,
+      "予想回答": PRED_SHEET,
     },
   });
   const stats = env.get();
@@ -137,7 +137,7 @@ test("success: D を数え、quiz は A/B/C/D/total の形になる", () => {
 });
 
 test("success: 集計の応答には名前もスライドの情報も含まれない / JSONP も返せる", () => {
-  const env = load({ sheets: { "フォームの回答 1": [QUIZ_HEADER, quizRow(0, "山田太郎", 1, "D")], "フォームの回答 2": PRED_SHEET } });
+  const env = load({ sheets: { "クイズ回答": [QUIZ_HEADER, quizRow(0, "山田太郎", 1, "D")], "予想回答": PRED_SHEET } });
   const out = env.doGet({ parameter: {} });
   assert.equal(out.mime, "JSON");
   assert.ok(!out.text.includes("山田"));
