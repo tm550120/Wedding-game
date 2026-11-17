@@ -8,6 +8,7 @@
  *   question   … 受付中の問題。「選ぶ → 送信する」で1回だけ送れる（送信済みならロック表示）
  *   closed     … 直前の問題が締め切られた（「締め切りました」）。司会画面が正解を映すと waiting に変わる
  *   waiting    … 何も受け付けていない（「次の問題をお待ちください」）
+ *   finished   … 予想を締め切ったあと、何も受け付けていない（「ご参加ありがとうございました！」。文言は config.js の GATE）
  *   connecting … 受付状態が分からない（まだ読めていない / しばらく読めていない）。回答ボタンは出さない
  * ゲストが自分で問題を選ぶことはできない。クイズも予想も、config.js の SECTIONS の定義で同じコードが動く。
  *
@@ -22,7 +23,7 @@
 import { SECTIONS, SUBMIT, GATE, HOST } from "./config.js";
 import { submitAnswer } from "./submit.js";
 import { loadName, saveName, loadSent, saveSent, updateAllSent } from "./storage.js";
-import { fetchGate, parseTarget, pruneSent, readDemoGate } from "./gate.js";
+import { fetchGate, guestMode, parseTarget, pruneSent, readDemoGate } from "./gate.js";
 import { autoCloseSeconds, guestRemaining, trackOpen } from "./countdown.js";
 
 const $ = (id) => document.getElementById(id);
@@ -30,6 +31,10 @@ const $ = (id) => document.getElementById(id);
 const DEMO = new URLSearchParams(location.search).get("demo") === "1";
 
 const AUTO_CLOSE_SEC = autoCloseSeconds(HOST, DEMO); // 司会画面が自動で締め切るまでの秒数。0 なら残り時間を出さない
+
+/** 終了の画面の文言（"\n" で改行）。空なら null。両方とも空なら、終了の画面は出さない。 */
+const lines = (text) => (text ? String(text).split("\n") : null);
+const FINISHED = { title: lines(GATE.finishedTitle), message: lines(GATE.finishedMessage) };
 
 /** 受付状態の取得方法。null なら未設定（Apps Script の URL がない）。 */
 const loadGate = DEMO
@@ -68,11 +73,10 @@ function sentAnswer(section, index) {
 function currentView() {
   const fresh = state.gate && Date.now() - state.gateAt < GATE.staleMs;
   if (!fresh) return { mode: "connecting" };
-  const open = parseTarget(state.gate.open);
-  if (open) return { mode: "question", ...open };
-  const closed = parseTarget(state.gate.lastClosed);
-  if (closed) return { mode: "closed", ...closed };
-  return { mode: "waiting" };
+  const mode = guestMode(state.gate, Boolean(FINISHED.title || FINISHED.message));
+  if (mode === "question") return { mode, ...parseTarget(state.gate.open) };
+  if (mode === "closed") return { mode, ...parseTarget(state.gate.lastClosed) };
+  return { mode }; // "waiting" / "finished"
 }
 
 /* ===== 表示 ===== */
@@ -150,9 +154,13 @@ function render() {
   } else if (mode === "closed") {
     prompt = [section.answerLabel(index) + "は", "締め切りました"];
     note = sent ? ["あなたの回答: " + sent, "次の問題をお待ちください"] : ["次の問題をお待ちください"];
-  } else if (mode === "waiting") {
+  } else if (mode === "waiting" || mode === "finished") {
     prompt = ["次の問題を", "お待ちください"];
     note = ["スクリーンに問題が出ると、", "ここに回答ボタンが出ます"];
+    if (mode === "finished") {
+      prompt = FINISHED.title || prompt;
+      note = FINISHED.message || note;
+    }
   } else {
     prompt = ["接続しています…"];
     note = ["そのままお待ちください"];

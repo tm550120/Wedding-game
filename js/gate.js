@@ -113,6 +113,23 @@ export function revealRequest(gate) {
   return gate.open || gate.lastClosed ? "idle" : null;
 }
 
+/**
+ * 回答ページがいま出す表示の種類（受付状態が読めているとき）。
+ *   "question" … 受付中の問題がある（gate.open）
+ *   "finished" … 何も受け付けておらず、予想（"pred"）が締め切り済み。予想のあとはスマホを使わないので、
+ *                「お待ちください」の代わりに終了の画面を出す（予想を締め切った直後もここ）
+ *   "closed"   … 直前の問題を締め切った（gate.lastClosed）
+ *   "waiting"  … 何も受け付けていない
+ * 終了のあとに司会が受付を開け直せば "question" に、記録を消せば（done が空）"waiting" に戻る。
+ * finishedEnabled が false（終了の文言が空）なら "finished" にはしない。
+ */
+export function guestMode(gate, finishedEnabled = true) {
+  if (parseTarget(gate.open)) return "question";
+  if (finishedEnabled && gate.done.includes("pred")) return "finished";
+  if (parseTarget(gate.lastClosed)) return "closed";
+  return "waiting";
+}
+
 /*
  * デモ表示（?demo=1）用の受付状態。Apps Script の代わりに、このブラウザの localStorage に置く。
  * 同じブラウザで host.html?demo=1 と index.html?demo=1 を開くと、司会画面の操作が回答ページに伝わる。

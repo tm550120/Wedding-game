@@ -85,6 +85,9 @@ button.choice.selected:disabled{ opacity:1; }
 #screen-live[data-mode="closed"] .qtext,
 #screen-live[data-mode="connecting"] .qtext{ font-size:24px; margin:26px 0 10px; }
 #screen-live[data-mode="closed"] .qtext{ color:var(--gold-light); }
+/* 予想を締め切ったあとの終了の画面（.done-mark と同じ大きな ✦。点滅はさせない） */
+#screen-live[data-mode="finished"] .progress{ font-size:52px; line-height:1.2; letter-spacing:0; color:var(--gold); margin:10px 0 4px; }
+#screen-live[data-mode="finished"] .qtext{ font-size:22px; margin:14px 0 10px; }
 #screen-live[data-mode="waiting"] .progress,
 #screen-live[data-mode="connecting"] .progress{ font-size:30px; color:var(--gold); animation:wait-pulse 2s ease-in-out infinite; }
 @keyframes wait-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
