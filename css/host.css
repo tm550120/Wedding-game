@@ -27,6 +27,14 @@ body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block
 .gate-label{ font-size:3.4vh; letter-spacing:.2em; color:var(--gold-light); }
 .gate-num{ font-size:10vh; line-height:1; font-weight:700; color:var(--paper); font-variant-numeric:tabular-nums; min-width:1.2em; text-align:right; }
 .gate-unit{ font-size:4vh; }
+/* 残り時間は「回答受付中」の下に置く（重ねる範囲の幅を広げないため） */
+.gate-state{ display:flex; flex-direction:column; gap:.8vh; }
+.gate-timer{ display:flex; align-items:baseline; gap:.8vw; padding-left:3vh; }
+.gate-timer-label{ font-size:2.6vh; letter-spacing:.2em; color:var(--gold-light); }
+.gate-time{ font-size:5vh; line-height:1; font-weight:700; color:var(--gold-light); font-variant-numeric:tabular-nums; }
+/* 残り10秒: 数字を明るくして、ゆっくり明滅させる */
+.gate-timer[data-urgent="true"] .gate-time{ color:var(--paper); animation:gate-urgent 1s ease-in-out infinite; }
+@keyframes gate-urgent{ 0%,100%{ opacity:1; } 50%{ opacity:.6; } }
 .gate[data-view="ready"]{ padding-right:1.8vw; opacity:.85; }
 .gate[data-view="ready"] .gate-dot, .gate[data-view="closed"] .gate-dot{ display:none; }
 /* 締め切り: 金色の札にして、受付中との違いが遠くからでも分かるようにする */

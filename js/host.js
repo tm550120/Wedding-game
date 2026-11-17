@@ -4,12 +4,15 @@
  * Google スライドを1枚ずつ画像で映し、→ / クリックで進める。問題のスライド（第N問・予想）では、
  * 1枚のスライドの上で「受付 → 締め切り → 正解」の順に進む。
  *
- *   スライドに来る  … その問題の回答の受付を開ける（ゲストのスマホに回答ボタンが出る）。「回答 ◯人」を重ねて映す
- *   →              … 締め切る。「締め切り」と最終の人数を映す
- *   →              … 正解を重ねて映す（クイズだけ。予想には正解の表示はない）
+ *   スライドに来る  … その問題の回答の受付を開ける（ゲストのスマホに回答ボタンが出る）。「回答 ◯人」と残り時間を重ねて映す
+ *   → / 時間切れ   … 締め切る。「締め切り」と最終の人数を映す（HOST.autoCloseSec 秒たつと、→ を押さなくても締め切る）
+ *   →              … 正解を重ねて映す（クイズだけ。予想には正解の表示はない）。ゲストのスマホは「お待ちください」に戻る
  *   →              … 次のスライドへ
  *   ←              … 正解を隠す → 前のスライドへ。締め切った問題に戻っても、受付は開け直さない
- *   O              … いまのスライドの問題の受付を開け直す
+ *   O              … いまのスライドの問題の受付を開け直す（残り時間は最初から数え直す）
+ *
+ * 残り時間を数えるのは、受付を開ける操作をしたこの画面だけ。再読み込みしたり別の端末で開いたりした画面は、
+ * 受付中の問題を映していても数えない（勝手に締め切らない）。
  *
  * どのスライドが問題かは Apps Script（apps-script/Code.gs）がスライド上の文字で判定して返す。
  * 受付状態は Apps Script が持つ。この画面は「→ を押した」などの操作のときだけ切り替えを頼み、
@@ -26,7 +29,8 @@ import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, sendSetOpen, isF
 import { createDemoBackend } from "./host-demo.js";
 import { panelSlides } from "./host-panel.js";
 import { createPoller } from "./poller.js";
-import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate } from "./gate.js";
+import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate, revealRequest } from "./gate.js";
+import { autoCloseSeconds, countdownView } from "./countdown.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +39,8 @@ const DEMO = query.get("demo") === "1";
 const PANEL_ONLY = query.get("panel") === "1" || query.get("chart") === "1";
 const hostKey = takeHostKey(); // URL の ?key=… はここで保存して、アドレスバーから消す
 const startHash = location.hash; // 再読み込み前の位置。"#s12" = 12枚目
+
+const AUTO_CLOSE_SEC = autoCloseSeconds(HOST, DEMO); // 0 なら自動では締め切らない
 
 const net = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
 
@@ -108,7 +114,52 @@ function requestGate(target) {
   desired = target;
   state.gate = reduceGate(state.gate, target);
   gateEpoch++;
+  // 受付を開ける操作のたびに、残り時間を最初から数える。締め切る・ほかへ切り替える操作なら、数えるのをやめる
+  if (parseTarget(target)) startCountdown(target);
+  else stopCountdown();
   pumpGate();
+}
+
+/*
+ * 自動締め切り。受付を開ける操作をしたときだけ数え始める（requestGate からしか始まらない）ので、
+ * 再読み込みやスライドの読み直しでは始まらない。
+ */
+let countdown = null; // { target, deadline }。数えていなければ null
+let countdownTimer = null;
+
+function startCountdown(target) {
+  stopCountdown();
+  if (!AUTO_CLOSE_SEC) return;
+  countdown = { target, deadline: Date.now() + AUTO_CLOSE_SEC * 1000 };
+  countdownTimer = setInterval(tickCountdown, 200);
+}
+
+function stopCountdown() {
+  clearInterval(countdownTimer);
+  countdownTimer = null;
+  countdown = null;
+}
+
+function tickCountdown() {
+  if (!countdown) return;
+  if (state.gate.open !== countdown.target) {
+    stopCountdown(); // ほかの画面から締め切られた・切り替えに失敗した
+  } else if (countdownView(countdown.deadline, Date.now()).expired) {
+    requestGate("none"); // 時間切れ。→ を1回押したのと同じ（数えるのもここで止まる）
+    render();
+    return;
+  }
+  renderCountdown();
+}
+
+/** 残り時間の表示だけを更新する（人数の数字のアニメーションを止めないよう、render とは分けてある）。 */
+function renderCountdown() {
+  const showing = Boolean(countdown) && countdown.target === currentTarget() && state.gate.open === countdown.target;
+  $("gate-timer").classList.toggle("hidden", !showing);
+  if (!showing) return;
+  const view = countdownView(countdown.deadline, Date.now());
+  $("gate-time").textContent = view.text;
+  $("gate-timer").dataset.urgent = String(view.urgent);
 }
 
 async function pumpGate() {
@@ -177,7 +228,7 @@ function hintFor(target, view) {
   if (!backend?.setOpen) return "表示のみ（司会キーがないので、受付は切り替えられません）";
   if (!state.gateKnown) return "受付状態を確認中…";
   if (view === "ready") return "→ 受付開始";
-  if (view === "open") return "→ 締め切る";
+  if (view === "open") return "→ 締め切る" + (countdown ? "（時間切れで自動的に締め切り）" : "");
   if (state.revealed) return "→ 次へ ／ ← 正解を隠す";
   return (isQuestion(target) ? "→ 正解を表示" : "→ 次へ") + " ／ O 受付を再開";
 }
@@ -204,6 +255,7 @@ function render() {
     $("gate-count").classList.toggle("hidden", view === "ready");
     tweenNumber($("gate-total"), view === "ready" ? 0 : totalOf(target));
   }
+  renderCountdown();
 
   // 正解
   const revealing = Boolean(target) && state.revealed;
@@ -247,8 +299,12 @@ function goTo(index, how) {
       requestGate(target); // 問題のスライドに進んできたら、その問題の受付を開ける
     } else if (target) {
       // 戻ってきた・飛んできた問題は、勝手に開けない。ほかの問題が開いたままなら閉じる
-      if (view !== "open" && state.gate.open) requestGate("none");
-      if (view === "closed" && how === "back" && isQuestion(target)) state.revealed = true; // ← で「正解 → 締め切り」と戻れるように
+      if (view === "closed" && how === "back" && isQuestion(target)) {
+        state.revealed = true; // ← で「正解 → 締め切り」と戻れるように
+        requestReveal();
+      } else if (view !== "open" && state.gate.open) {
+        requestGate("none");
+      }
     } else if (state.gate.open || state.gate.lastClosed) {
       requestGate("idle"); // 普通のスライドでは何も受け付けない（ゲストは「お待ちください」になる）
     }
@@ -260,6 +316,12 @@ function goTo(index, how) {
     if (slide.loaded) slide.el.decode?.().catch(() => {});
   });
   render();
+}
+
+/** 正解を映す段に入った。ゲストのスマホを「お待ちください」に戻す（ほかの問題が開いたままなら、それも閉じる）。 */
+function requestReveal() {
+  const request = revealRequest(state.gate);
+  if (request) requestGate(request);
 }
 
 /** → / クリック。問題のスライドでは「受付 → 締め切り → 正解」と1段ずつ進み、最後に次のスライドへ。 */
@@ -274,6 +336,7 @@ function advance() {
     }
     if (view === "closed" && !state.revealed && isQuestion(target) && backend?.loadAnswers) {
       state.revealed = true;
+      requestReveal();
       if (!state.answers) refreshAnswers();
       render();
       return;
@@ -282,7 +345,11 @@ function advance() {
   goTo(state.slide + 1, "forward");
 }
 
-/** ←。正解を映していれば隠し、そうでなければ前のスライドへ（受付は開け直さない）。 */
+/**
+ * ←。正解を映していれば隠し、そうでなければ前のスライドへ（受付は開け直さない）。
+ * 正解を隠しても、ゲストのスマホは「お待ちください」のまま（「締め切りました」には戻さない）。
+ * Apps Script の setOpen には「開け直さずに lastClosed だけを戻す」切り替えがないため。
+ */
 function retreat() {
   if (state.revealed) {
     state.revealed = false;

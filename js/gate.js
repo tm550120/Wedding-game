@@ -103,6 +103,16 @@ export function reduceGate(gate, target) {
   return same ? gate : { open, lastClosed, done, rev: gate.rev + 1 };
 }
 
+/**
+ * 司会画面が正解を映す段に入るときに頼む切り替え先。
+ * 正解を映している間、回答ページは「締め切りました」ではなく「次の問題をお待ちください」にする。
+ * "idle" は open と lastClosed を消すが done は残すので、送信済みロック（pruneSent）は外れない。
+ * すでに待ち受けなら、頼むことはない（null）。
+ */
+export function revealRequest(gate) {
+  return gate.open || gate.lastClosed ? "idle" : null;
+}
+
 /*
  * デモ表示（?demo=1）用の受付状態。Apps Script の代わりに、このブラウザの localStorage に置く。
  * 同じブラウザで host.html?demo=1 と index.html?demo=1 を開くと、司会画面の操作が回答ページに伝わる。

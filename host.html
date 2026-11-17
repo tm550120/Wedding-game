@@ -17,7 +17,14 @@
 
   <!-- 問題のスライドに重ねる、受付の状態と回答した人数（合計だけ） -->
   <div class="gate hidden" id="gate" data-view="ready">
-    <p class="gate-status"><span class="gate-dot"></span><span id="gate-status"></span></p>
+    <div class="gate-state">
+      <p class="gate-status"><span class="gate-dot"></span><span id="gate-status"></span></p>
+      <!-- 自動で締め切るまでの残り時間（この画面で受付を開けたときだけ出る） -->
+      <p class="gate-timer hidden" id="gate-timer">
+        <span class="gate-timer-label">残り</span>
+        <span class="gate-time" id="gate-time">0:00</span>
+      </p>
+    </div>
     <p class="gate-count" id="gate-count">
       <span class="gate-label">回答</span>
       <span class="gate-num" id="gate-total">0</span>

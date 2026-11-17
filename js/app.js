@@ -6,7 +6,7 @@
  *
  * live の表示は、Apps Script から数秒ごとに読む受付状態（応答のあと 1〜1.5秒おいて次を読む）（js/gate.js）で決まる。
  *   question   … 受付中の問題。「選ぶ → 送信する」で1回だけ送れる（送信済みならロック表示）
- *   closed     … 直前の問題が締め切られた（「締め切りました」）
+ *   closed     … 直前の問題が締め切られた（「締め切りました」）。司会画面が正解を映すと waiting に変わる
  *   waiting    … 何も受け付けていない（「次の問題をお待ちください」）
  *   connecting … 受付状態が分からない（まだ読めていない / しばらく読めていない）。回答ボタンは出さない
  * ゲストが自分で問題を選ぶことはできない。クイズも予想も、config.js の SECTIONS の定義で同じコードが動く。
@@ -23,10 +23,13 @@ import { SECTIONS, SUBMIT, GATE, HOST } from "./config.js";
 import { submitAnswer } from "./submit.js";
 import { loadName, saveName, loadSent, saveSent, updateAllSent } from "./storage.js";
 import { fetchGate, parseTarget, pruneSent, readDemoGate } from "./gate.js";
+import { autoCloseSeconds, guestRemaining, trackOpen } from "./countdown.js";
 
 const $ = (id) => document.getElementById(id);
 
 const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+
+const AUTO_CLOSE_SEC = autoCloseSeconds(HOST, DEMO); // 司会画面が自動で締め切るまでの秒数。0 なら残り時間を出さない
 
 /** 受付状態の取得方法。null なら未設定（Apps Script の URL がない）。 */
 const loadGate = DEMO
@@ -50,6 +53,7 @@ const state = {
   gate: null,         // 最後に読めた受付状態
   gateAt: 0,          // それを読めた時刻
   failures: 0,        // 受付状態の取得に続けて失敗した回数
+  openSeen: null,     // 受付が開いたのをいつ見たか（js/countdown.js の trackOpen）。残り時間の目安に使う
 };
 
 /* ===== 状態の読み取り ===== */
@@ -82,11 +86,28 @@ function setLines(el, lines) {
   });
 }
 
+/*
+ * 締め切りまでのおよその残り時間（「残り約 42秒」）。受付が開く瞬間をこの端末が見ていたときだけ出す。
+ * あくまで目安で、0 になっても回答ボタンと送信はそのまま使える（締め切るのは司会画面。早めに締め切ることも、
+ * 開け直すこともある）。
+ */
+function renderCountdown() {
+  const view = state.started ? currentView() : { mode: "connecting" };
+  const seen = state.openSeen;
+  const left =
+    view.mode === "question" && seen && seen.target === view.target
+      ? guestRemaining(seen.since, Date.now(), AUTO_CLOSE_SEC, GATE.openLagMs)
+      : null;
+  $("live-countdown").classList.toggle("hidden", left === null);
+  if (left !== null) $("live-countdown").textContent = left > 0 ? "残り約 " + left + "秒" : "まもなく締め切ります";
+}
+
 let lastSignature = "";
 
 /** live 画面を、いまの状態に合わせる。見た目が変わらないときは作り直さない（押している途中のボタンを消さないため）。 */
 function render() {
   if (!state.started) return;
+  renderCountdown();
   const view = currentView();
   const { mode, target, section, index } = view;
   const sent = section ? sentAnswer(section, index) : null;
@@ -200,8 +221,12 @@ async function poll() {
   if (pollBusy || !loadGate || document.hidden) return; // 画面を閉じている間は読まない（戻ったときに再開する）
   pollBusy = true;
   try {
-    state.gate = await loadGate();
-    state.gateAt = Date.now();
+    const gate = await loadGate();
+    const now = Date.now();
+    // 長く読めなかったあとは、その間に何があったか分からないので、見た時刻を覚え直す
+    state.openSeen = trackOpen(now - state.gateAt < GATE.staleMs ? state.openSeen : null, gate, now);
+    state.gate = gate;
+    state.gateAt = now;
     state.failures = 0;
     reconcileSent(state.gate); // 読めたときだけ。失敗したときに残してある古い状態では直さない
   } catch (e) {
@@ -254,6 +279,7 @@ $("btn-start").addEventListener("click", start);
 $("btn-submit").addEventListener("click", handleSubmit);
 initFallbackLinks();
 if (DEMO) $("badge-demo").classList.remove("hidden");
+if (AUTO_CLOSE_SEC) setInterval(renderCountdown, 500);
 
 // 画面に戻ってきたら、すぐ読み直す（閉じている間に進んだ分を取り戻す）
 document.addEventListener("visibilitychange", () => {

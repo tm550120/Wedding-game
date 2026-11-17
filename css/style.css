@@ -88,5 +88,7 @@ button.choice.selected:disabled{ opacity:1; }
 #screen-live[data-mode="waiting"] .progress,
 #screen-live[data-mode="connecting"] .progress{ font-size:30px; color:var(--gold); animation:wait-pulse 2s ease-in-out infinite; }
 @keyframes wait-pulse{ 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
+/* 締め切りまでのおよその残り時間（目安。送信はこの表示では止めない） */
+.countdown{ text-align:center; font-size:14px; letter-spacing:.12em; color:var(--gold-light); margin:-10px 0 16px; font-variant-numeric:tabular-nums; }
 .notice{ font-size:13px; line-height:1.7; text-align:center; color:#ffd9cc; margin:18px 0 0; }
 .demo-badge{ font-size:12px; color:var(--gold-light); border:1px solid var(--gold-light); border-radius:14px; padding:4px 12px; margin-top:18px; }
