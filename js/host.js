@@ -19,6 +19,10 @@
  * （下の順位から始めて、1位が最後。進み方は js/ranking.js）。このスライドでは受付状態を変えない
  * （ゲストのスマホは、それまでの表示のまま）。数字キーでも問題へは飛ばない。
  *
+ * ランキングのスライドのすぐ後ろに「N位の景品」のスライド（kind: "prize"）が続いているときは、N位を映したあとに
+ * その景品のスライドをはさみ、→ でランキングに戻って上の順位を映す（1位 → 1位の景品 が最後。進み方は js/prize-flow.js）。
+ * 順位を映せないときは、スライドを並び順どおりに映す。
+ *
  * 残り時間を数えるのは、受付を開ける操作をしたこの画面だけ。再読み込みしたり別の端末で開いたりした画面は、
  * 受付中の問題を映していても数えない（勝手に締め切らない）。
  *
@@ -26,8 +30,8 @@
  * 受付状態は Apps Script が持つ。この画面は「→ を押した」などの操作のときだけ切り替えを頼み、
  * 開いただけ・再読み込みしただけでは何も切り替えない（別の端末で開いても本番の受付を壊さないように）。
  *
- * スライドを取得できないとき（司会キーがない / ?panel=1 / 取得に失敗）は、第1問〜第10問と予想、予想結果、ランキングを
- * 1枚ずつ並べた仮のスライドで同じように動く。司会キーがないときは受付を切り替えられず、人数を映すだけになる。
+ * スライドを取得できないとき（司会キーがない / ?panel=1 / 取得に失敗）は、第1問〜第10問と予想、予想結果、ランキング、
+ * 2位・1位の景品を1枚ずつ並べた仮のスライドで同じように動く。司会キーがないときは受付を切り替えられず、人数を映すだけになる。
  *
  * 映すのは人数の合計だけ（選択肢ごとの人数は Apps Script からも届かない）。
  * 名前が届くのは「予想結果」のスライドで的中した人を取得するときと、「ランキング」のスライドで順位を取得するときだけ（司会キーが要る）。
@@ -42,6 +46,7 @@ import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate, revealRe
 import { autoCloseSeconds, countdownView } from "./countdown.js";
 import { PRED_START, matchedCountOf, predStep, stepPred, hitsNote, namesLayout, nameScale } from "./pred-result.js";
 import { RANK_START, rankLimitOf, rankShown, stepRank, rankNote, rankLayout, placeLabel, scoreLabel, cutoffLabel } from "./ranking.js";
+import { prizeFlow, flowPos, stepFlow, flowExit, inFlow } from "./prize-flow.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -76,7 +81,7 @@ const backend = DEMO
 const loadSlides = PANEL_ONLY ? null : backend?.loadSlides || null;
 
 const state = {
-  slides: [],        // { objectId, kind, question, el, imageUrl, loaded, failed }
+  slides: [],        // { objectId, kind, question, place, el, imageUrl, loaded, failed }
   slide: 0,          // slides の添字
   panel: false,      // 仮のスライド（第1問〜予想）で動いているか
   waitingForSlides: false,
@@ -106,6 +111,16 @@ const currentTarget = () => targetOf(state.slides[state.slide]);
 const isPredResult = (slide) => slide?.kind === "predResult";
 const isRanking = (slide) => slide?.kind === "ranking";
 const isQuestion = (target) => target !== "pred";
+
+/**
+ * ランキングと景品のスライドを行き来する進み方（js/prize-flow.js）。使わないとき（景品のスライドが続いていない・
+ * 順位を映せない）は null。返すもの: { rankingIndex, steps, pos }。pos はいま映しているものの位置で、
+ * ほかのスライドを映しているときは -1。
+ */
+function prizeFlowNow() {
+  const flow = prizeFlow(state.slides, state.ranking);
+  return flow && { ...flow, pos: flowPos(flow, state.slide, rankShown(state.rank, state.ranking)) };
+}
 
 /** その対象の受付の状態。"open" = 受付中 / "closed" = 締め切り済み / "ready" = まだ開けていない */
 function viewOf(target) {
@@ -287,13 +302,17 @@ function renderPredResult(step) {
   $("pred-names-closing").classList.toggle("hidden", closing === "");
 }
 
-/** 「ランキング」のスライドの表示。shown: 映している組の数（0 ならスライドだけ）。このスライドでなければ null。 */
-function renderRanking(shown) {
+/**
+ * 「ランキング」のスライドの表示。shown: 映している組の数（0 ならスライドだけ）。このスライドでなければ null。
+ * keep: 景品のスライドをはさんでいる間（すぐランキングに戻る）。映した組の印を残しておく。
+ */
+function renderRanking(shown, keep) {
   const showing = shown !== null && shown > 0;
+  const wasHidden = $("rank").classList.contains("hidden");
   $("rank").classList.toggle("hidden", !showing);
   if (!showing) {
     // 隠している間に「映した」印を外しておく（次に映すとき、現れる動きを最初からやり直す）
-    [...$("rank-list").children].forEach((item) => item.classList.remove("shown", "fresh"));
+    if (!keep) [...$("rank-list").children].forEach((item) => item.classList.remove("shown", "fresh", "steady"));
     return;
   }
 
@@ -349,7 +368,11 @@ function renderRanking(shown) {
   // 下の順位から shown 組だけを映す。いちばん新しく映した組は、枠を明るくする
   const firstShown = rows.length - shown;
   [...list.children].forEach((item, i) => {
-    item.classList.toggle("shown", i >= firstShown);
+    const on = i >= firstShown;
+    // 景品のスライドから戻ってきたとき、前から映していた組は動かさずに出す（新しく映す組だけが現れる）
+    if (wasHidden) item.classList.toggle("steady", on && item.classList.contains("shown"));
+    else if (!on) item.classList.remove("steady");
+    item.classList.toggle("shown", on);
     item.classList.toggle("fresh", i === firstShown && rows.length > 1);
   });
 }
@@ -393,8 +416,8 @@ function render() {
     $("reveal-answer").textContent = state.pred.n + "問！";
   }
 
-  // ランキング
-  renderRanking(rankView);
+  // ランキング（景品のスライドをはさんでいる間は、映した組の印を残す）
+  renderRanking(rankView, rankView === null && (prizeFlowNow()?.pos ?? -1) >= 0);
 
   // 正解
   const revealing = Boolean(target) && state.revealed;
@@ -423,7 +446,8 @@ function setError(source, message) {
 
 /**
  * スライドを移動する。how: "forward"（→ で1枚進んだ）/ "back"（← で1枚戻った）/ "jump"（Home・数字キーなど）/
- * "init"（開いた直後・スライド一覧の読み直し。受付は切り替えない）
+ * "init"（開いた直後・スライド一覧の読み直し。受付は切り替えない）/
+ * "flow"（ランキングと景品のスライドの行き来。ランキングの段は呼び出し側が決めてあるので、ここでは変えない）
  */
 function goTo(index, how) {
   const next = Math.min(Math.max(index, 0), state.slides.length - 1);
@@ -436,7 +460,7 @@ function goTo(index, how) {
   }
   // 「ランキング」のスライドは、来るたびに順位を取得し直して最初から。次のスライドから ← で戻ってきたときだけ、
   // 全員を映した続きから。スライド一覧の読み直し（"init"）で同じスライドに留まるときは、発表の途中の段をそのまま保つ
-  if (isRanking(state.slides[next]) && !(how === "init" && next === state.slide && state.ranking)) {
+  if (isRanking(state.slides[next]) && how !== "flow" && !(how === "init" && next === state.slide && state.ranking)) {
     if (how === "back" && state.ranking?.status === "ok") {
       state.rank = stepRank(state.rank, "return", state.ranking).rank;
     } else {
@@ -480,8 +504,35 @@ function requestReveal() {
   if (request) requestGate(request);
 }
 
+/** ランキングと景品のスライドの進み方の pos 番目を映す（景品のスライド、またはランキングの shown 組）。 */
+function showFlowStep(flow, pos) {
+  const step = flow.steps[pos];
+  state.rank = { shown: step.shown };
+  const index = step.prize ? step.prize.index : flow.rankingIndex;
+  if (index === state.slide) render();
+  else goTo(index, "flow");
+}
+
+/**
+ * ランキングと景品のスライドを行き来している間の → / ←。進み方の中にいなければ false（いつもの進み方をする）。
+ * 順位の取得中は進み方がまだ無いので、ここでは何もしない（ランキングのスライドの → は、取得が終わるまで進まない）。
+ */
+function stepPrizeFlow(action) {
+  const flow = prizeFlowNow();
+  if (!flow || flow.pos < 0) return false;
+  const { pos, leave } = stepFlow(flow, flow.pos, action);
+  if (!leave) showFlowStep(flow, pos);
+  else if (leave === "prev") goTo(flow.rankingIndex - 1, "back");
+  else {
+    const exit = flowExit(flow, state.slides.length); // 映し終えた景品のスライドは飛ばす
+    if (exit >= 0) goTo(exit, "forward");
+  }
+  return true;
+}
+
 /** → / クリック。問題のスライドでは「受付 → 締め切り → 正解」と1段ずつ進み、最後に次のスライドへ。 */
 function advance() {
+  if (stepPrizeFlow("advance")) return;
   if (isPredResult(state.slides[state.slide])) {
     const { pred, leave } = stepPred(state.pred, "advance", state.hits);
     if (!leave) {
@@ -523,6 +574,7 @@ function advance() {
  * Apps Script の setOpen には「開け直さずに lastClosed だけを戻す」切り替えがないため。
  */
 function retreat() {
+  if (stepPrizeFlow("retreat")) return;
   if (isPredResult(state.slides[state.slide])) {
     const { pred, leave } = stepPred(state.pred, "retreat", state.hits);
     if (!leave) {
@@ -543,7 +595,10 @@ function retreat() {
     state.revealed = false;
     render();
   } else {
-    goTo(state.slide - 1, "back");
+    // 景品のスライドの次のスライドから戻るときは、ランキングと景品の進み方の最後（1位の景品など）へ
+    const flow = prizeFlowNow();
+    if (flow && inFlow(flow, state.slide - 1)) showFlowStep(flow, stepFlow(flow, flow.pos, "return").pos);
+    else goTo(state.slide - 1, "back");
   }
 }
 
@@ -681,6 +736,7 @@ function applySlides(list, panel) {
     const slide = known.get(item.objectId) || { objectId: item.objectId, el: Object.assign(el("img"), { alt: "" }), imageUrl: null, loaded: false, failed: false };
     slide.kind = item.kind;
     slide.question = item.question;
+    slide.place = item.place; // 景品のスライド（kind: "prize"）の順位
     return slide;
   });
   $("stage").replaceChildren($("stage-message"), ...state.slides.map((slide) => slide.el));
@@ -850,8 +906,8 @@ function initControls() {
       if (isPredResult(state.slides[state.slide])) {
         const n = matchedCountOf(key);
         if (n !== null) enterMatchedCount(n);
-      } else if (isRanking(state.slides[state.slide])) {
-        // 「ランキング」のスライドでは、数字キーは何もしない（発表の途中で問題へ飛ばないように）
+      } else if (isRanking(state.slides[state.slide]) || (prizeFlowNow()?.pos ?? -1) >= 0) {
+        // 「ランキング」のスライドと、発表の途中にはさむ景品のスライドでは、数字キーは何もしない（発表の途中で問題へ飛ばないように）
       } else jumpToTarget("q" + (key === "0" ? 10 : key));
     } else if (key === "p" || key === "P") jumpToTarget("pred");
     else return;

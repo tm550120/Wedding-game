@@ -788,6 +788,25 @@ const classifyCases = {
   "success: 予想結果はランキングより優先": [["予想結果", "ランキング"], { kind: "predResult" }],
   "success: ランキングのスライドに 何問そろ があっても、予想の受付は開けない": [["ランキング", "何問そろったでしょう"], { kind: "ranking" }],
   "success: 予想タイム はランキングではない": [["予想タイム", "ランキングはあとで"], { kind: "prediction" }],
+  "success: 2位の景品（題名）": [["2位の景品", "衣類\nスチーマー", "Panasonic NI-FS60C"], { kind: "prize", place: 2 }],
+  "success: 1位の景品（題名）": [["1位の景品", "ネスレの\nコーヒーマシン"], { kind: "prize", place: 1 }],
+  "success: 全角の数字・空白・改行": [["２位 の\n景品　"], { kind: "prize", place: 2 }],
+  "success: N位 景品 / 第N位の景品 / N位の賞品 / 感嘆符": [["3位 景品"], { kind: "prize", place: 3 }],
+  "success: 第N位の景品": [["第１位の景品！"], { kind: "prize", place: 1 }],
+  "success: N位の賞品": [["10位の賞品："], { kind: "prize", place: 10 }],
+  "success: 題名と品名を同じ箱に改行して書いた景品": [["2位の景品\n衣類スチーマー\nPanasonic"], { kind: "prize", place: 2 }],
+  "success: 題名と品名を Shift+Enter の改行で分けた景品": [["Prize", "1位の景品\u000bコーヒーマシン"], { kind: "prize", place: 1 }],
+  "success: 同じ順位の題名が2つ": [["2位の景品", "2位 景品"], { kind: "prize", place: 2 }],
+  "success: 同じ行に続きのある 景品 は目印ではない": [["2位の景品は衣類スチーマーです", "正解数の多い方に景品！"], { kind: "slide" }],
+  "success: 文中の N位の景品 は目印ではない": [["つぎは2位の景品です", "景品", "2位"], { kind: "slide" }],
+  "success: 違う順位の題名が2つあれば決めない（景品の一覧）": [["1位の景品", "コーヒーマシン", "2位の景品", "スチーマー"], { kind: "slide" }],
+  "success: 違う順位の題名が同じ箱の別の行": [["1位の景品\nコーヒーマシン\n2位の景品\nスチーマー"], { kind: "slide" }],
+  "success: 範囲外の順位（0位・31位・漢数字）": [["0位の景品", "31位の景品", "二位の景品"], { kind: "slide" }],
+  "success: 30位の景品": [["30位の景品"], { kind: "prize", place: 30 }],
+  "success: 問題の題名は景品より優先": [["Q3", "1位の景品"], { kind: "question", question: 3 }],
+  "success: ランキングは景品より優先": [["ランキング", "1位の景品"], { kind: "ranking" }],
+  "success: 予想結果は景品より優先": [["予想結果", "1位の景品"], { kind: "predResult" }],
+  "success: 予想は景品より優先": [["予想タイム", "1位の景品"], { kind: "prediction" }],
   "success: 以前の 第N問 回答数 は映さない": [["第5問 回答数", "回答数のグラフをここに貼ります"], { kind: "legacy" }],
   "success: 以前の Q5 回答数 は映さない": [["Q5：回答数"], { kind: "legacy" }],
   "success: 以前の 予想 回答数 は映さない": [["予想 回答数"], { kind: "legacy" }],
@@ -861,6 +880,45 @@ test("success: ランキングのスライドは ranking で返す（2枚目は�
   assert.deepEqual(JSON.parse(out.text).slides.map((s) => [s.objectId, s.kind]), [["k1", "question"], ["k2", "predResult"], ["k3", "ranking"], ["k4", "slide"]]);
   assert.ok(!out.text.includes("ランキング") && !out.text.includes("成績"));
   env.testSlides();
+});
+
+test("success: 景品のスライドは prize と順位で返す（同じ順位が2枚あっても両方。文字は返さない）", () => {
+  const deck = [
+    slide("z1", [shape("2位の景品"), shape("景品紹介")]), // ランキングより前（司会画面は普通のスライドとして映す）
+    slide("z2", [shape("ランキング")]),
+    slide("z3", [shape("Prize"), group(shape("２位の景品\n衣類スチーマー"))]),
+    slide("z4", [table([["1位の景品", null], ["コーヒーマシン", "NESCAFÉ"]])]),
+    slide("z5", [shape("3位の景品")], true), // スキップに設定したスライド
+    slide("z6", [shape("1位の景品"), shape("2位の景品")]), // 順位を決められない → 普通のスライド
+    slide("z7", [shape("Thank you!")]),
+  ];
+  const logs = [];
+  const env = load({ slides: deck });
+  env.Logger.log = (line) => logs.push(String(line));
+  const out = env.doGet({ parameter: { action: "slides", key: HOST_KEY } });
+  const res = JSON.parse(out.text);
+  assert.deepEqual(
+    res.slides.map((s) => [s.objectId, s.kind, s.place ?? null, s.imageUrl === null ? null : "url"]),
+    [
+      ["z1", "prize", 2, "url"],
+      ["z2", "ranking", null, "url"],
+      ["z3", "prize", 2, "url"],
+      ["z4", "prize", 1, "url"],
+      ["z6", "slide", null, "url"],
+      ["z7", "slide", null, "url"],
+    ]
+  );
+  for (const item of res.slides) assert.deepEqual(Object.keys(item).sort(), item.kind === "prize" ? ["imageUrl", "kind", "objectId", "place"] : ["imageUrl", "kind", "objectId"]);
+  for (const secret of ["景品", "スチーマー", "コーヒー", "NESCAFÉ", "Thank", DECK_ID, HOST_KEY]) assert.ok(!out.text.includes(secret), secret);
+  // キャッシュから返すときも、順位が付いている
+  assert.deepEqual(env.get({ action: "slides", key: HOST_KEY }).slides.map((s) => s.place ?? null), [2, null, 2, 1, null, null]);
+  assert.equal(env.calls.opened.length, 1);
+
+  env.testSlides();
+  assert.ok(logs.some((line) => line.startsWith("3: prize 2位 | ")), logs.join("\n"));
+  assert.ok(logs.some((line) => line.startsWith("4: prize 1位 | ")));
+  assert.ok(logs.some((line) => line.startsWith("5: （スキップ）")));
+  assert.ok(logs.some((line) => line.startsWith("6: slide | ")));
 });
 
 test("success: 2回目はキャッシュを使い、refresh で作り直す", () => {

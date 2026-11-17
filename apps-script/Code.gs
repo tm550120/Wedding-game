@@ -96,7 +96,7 @@ const HOST_KEY_MIN_LENGTH = 16;
 // スライドの並びと種類（どれが問題のスライドか）をキャッシュする秒数。
 // スライドを並べ替えたり文字を直したりしたあと、この秒数以内に反映される。
 const SLIDE_LIST_CACHE_SECONDS = 60;
-const SLIDE_LIST_CACHE_KEY = "wg_slide_list_v2";
+const SLIDE_LIST_CACHE_KEY = "wg_slide_list_v3";
 
 // スライド画像の URL をキャッシュする秒数。Slides API が返す URL は約30分で切れるので、それより短くする。
 // スライドの見た目を直したあとは、司会画面で R キー（refresh=all）を押すと作り直す。
@@ -807,7 +807,8 @@ function testRanking() {
  *       { "objectId": "g12", "kind": "question",   "imageUrl": "https://…", "question": 5 },
  *       { "objectId": "g34", "kind": "prediction", "imageUrl": "https://…" },
  *       { "objectId": "g56", "kind": "predResult", "imageUrl": "https://…" },
- *       { "objectId": "g78", "kind": "ranking",    "imageUrl": "https://…" }
+ *       { "objectId": "g78", "kind": "ranking",    "imageUrl": "https://…" },
+ *       { "objectId": "g90", "kind": "prize",      "imageUrl": "https://…", "place": 2 }
  *     ],
  *     "pending": 0            // まだ画像を作れていない枚数。0 より大きければ、少し待ってもう一度呼ぶ
  *   }
@@ -818,11 +819,13 @@ function testRanking() {
  *   prediction … 以心伝心ゲーム予想を尋ねるスライド。映している間だけ予想を受け付ける
  *   predResult … 予想の結果を発表するスライド。司会画面が、そろった数と的中した人の名前を重ねて映す（受付は開けない）
  *   ranking    … クイズの成績を発表するスライド。司会画面が、正解数の多い順に名前を重ねて映す（受付は開けない）
+ *   prize      … 「N位の景品」のスライド（place が N）。画像をそのまま映す。ランキングのスライドのすぐ後ろに続けて
+ *                並べてあると、司会画面が N位を発表した直後にこのスライドをはさんで映す
  *   slide      … それ以外。スライドの画像をそのまま映す
  *   詳しい条件は classifySlideTexts_ を参照。
  *
  * 守っていること:
- *   - スライドの ID・スライド上の文字（正解を含む）は返さない。返すのは種類・問題番号・画像の URL だけ。
+ *   - スライドの ID・スライド上の文字（正解を含む）は返さない。返すのは種類・問題番号・景品の順位・画像の URL だけ。
  *   - 画像の URL は Slides API のサムネイル（googleusercontent.com）で、スライドの ID を含まない。
  *     スライド自体は「限定公開」のままでよい（ウェブ公開やリンク共有は不要）。
  *   - 司会キーが合わない呼び出しには何も返さない。
@@ -876,7 +879,7 @@ function scriptCache_() {
   }
 }
 
-/** スライドの並びと種類。[{ objectId, kind, question? }]（スキップに設定したスライドは含めない）。 */
+/** スライドの並びと種類。[{ objectId, kind, question?, place? }]（スキップに設定したスライドは含めない）。 */
 function getSlideList_(deckId, skipCache) {
   const cache = scriptCache_();
   if (cache && !skipCache) {
@@ -907,6 +910,12 @@ function readSlideList_(deckId) {
     if (found.kind === "legacy") return; // 以前の「回答数」スライドは映さない
     const item = { objectId: slide.getObjectId(), kind: found.kind };
     if (found.kind === "question") item.question = found.question;
+    if (found.kind === "prize") {
+      // 景品のスライドは、同じ順位が何枚あってもそのまま返す（どれを順位の発表にはさむかは、司会画面が並び順で決める）
+      item.place = found.place;
+      list.push(item);
+      return;
+    }
     const id = found.kind === "question" ? "q" + found.question : found.kind;
     if (found.kind !== "slide" && seen[id]) {
       item.kind = "slide";
@@ -962,6 +971,11 @@ function collectElementTexts_(element, texts) {
   }
 }
 
+/** テキストボックス1つの文字を、行ごとに分ける（段落の区切りと、Shift+Enter の改行）。 */
+function splitLines_(text) {
+  return String(text === null || text === undefined ? "" : text).split(/[\r\n\u000b\u2028\u2029]+/);
+}
+
 /** 判定用に、全角/半角・大文字/小文字のゆれをならし、空白と改行をすべて取り除く。 */
 function normalizeMarker_(text) {
   return String(text === null || text === undefined ? "" : text).normalize("NFKC").toUpperCase().replace(/\s+/g, "");
@@ -980,6 +994,9 @@ const PRED_RESULT_TITLE_RE = /^(?:以心伝心(?:ゲーム)?の?)?予想の?(?:�
 // 「ランキング」「クイズランキング」「ランキング発表」「成績発表」「クイズ成績発表」など。
 // ほかの題名とは重ならない（「予想」も問題番号も入らない。「結果発表」だけでは当てはまらない）
 const RANKING_TITLE_RE = /^(?:クイズの?)?(?:ランキング(?:発表)?|成績発表)[!.:。]*$/;
+// 景品のスライドの題名。テキストボックス1つ、またはその中の1行が、これだけでできている。
+// 「2位の景品」「2位 景品」「第2位の景品」「2位の賞品」「2位の景品！」など（全角の数字は normalizeMarker_ で半角になる）
+const PRIZE_TITLE_RE = /^第?(\d{1,2})位の?(?:景品|賞品)[!.:。]*$/;
 // 予想の質問文そのもの。スライドのどこかにあればよい。「…5問中何問そろいますか？」「何問揃う？」
 const PRED_QUESTION_RE = /何問(?:そろ|揃)/;
 // 以前の「第N問 回答数」スライドの題名（いまは使わないので、スライドショーから外す）
@@ -999,8 +1016,13 @@ const LEGACY_COUNTS_RE = /(?:第\d{1,2}問目?|Q\.?\d{1,2})[-‐–—―:・|\/
  *    「ランキングは最後に発表します」のように続きがある箱や、「結果発表」だけの箱は当てはまらない。
  * 4. prediction: 「予想タイム」（または「予想」「以心伝心ゲーム予想」）だけが書かれたテキストボックスがある、
  *    またはスライドのどこかに「何問そろ」（何問揃）がある。例: 「新郎新婦の答えは5問中何問そろいますか？」
- * 5. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
- * 6. それ以外は slide。
+ * 5. prize: 「N位の景品」（または「N位 景品」「第N位の景品」「N位の賞品」。N は 1〜30）だけが書かれたテキストボックスがある、
+ *    またはテキストボックスの中の1行がそれだけでできている（題名と品名を同じ箱に改行して書いてあってもよい）。
+ *    例: 題名の箱に「2位の景品」。「2位の景品は衣類スチーマーです」のように同じ行に続きがあるものは当てはまらない。
+ *    違う順位の題名が2つ以上あるスライド（景品の一覧など）は、どの順位か決められないので slide にする。
+ *    問題・予想結果・ランキング・予想の題名があるスライドは、そちらが優先。
+ * 6. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
+ * 7. それ以外は slide。
  */
 function classifySlideTexts_(texts) {
   const boxes = (texts || []).map(normalizeMarker_).filter(String);
@@ -1030,6 +1052,20 @@ function classifySlideTexts_(texts) {
     return PRED_TITLE_RE.test(box);
   };
   if (boxes.some(isPredTitle) || PRED_QUESTION_RE.test(whole)) return { kind: "prediction" };
+
+  const places = {};
+  const notePlace = function (line) {
+    const m = PRIZE_TITLE_RE.exec(line);
+    const place = m ? Number(m[1]) : 0;
+    if (place >= 1 && place <= RANKING_MAX_LIMIT) places[place] = true;
+  };
+  boxes.forEach(notePlace);
+  (texts || []).forEach(function (text) {
+    splitLines_(text).map(normalizeMarker_).forEach(notePlace);
+  });
+  const prizes = Object.keys(places);
+  if (prizes.length === 1) return { kind: "prize", place: Number(prizes[0]) };
+  if (prizes.length > 1) return { kind: "slide" };
 
   const isLegacyTitle = function (box) {
     return LEGACY_COUNTS_RE.test(box);
@@ -1065,6 +1101,7 @@ function attachThumbnails_(deckId, list, refreshAll, refreshIds) {
   const slides = list.map(function (item) {
     const out = { objectId: item.objectId, kind: item.kind, imageUrl: null };
     if (item.kind === "question") out.question = item.question;
+    if (item.kind === "prize") out.place = item.place;
 
     let url = refreshIds.indexOf(item.objectId) >= 0 ? "" : cached[keyOf(item)] || "";
     if (!url && !stopped) {
@@ -1131,7 +1168,7 @@ function setupHostKey() {
  * 権限の承認と、スライドの種類の判定結果の確認をするための関数。
  * 実行ログに「ページ番号: 種類 | スライド上の文字の先頭」を出す（このログはエディタでしか見えない）。
  * 第1問〜第10問がそれぞれ question、予想のスライドが prediction、予想結果のスライドが predResult、
- * ランキングのスライドが ranking になっていることを確かめる
+ * ランキングのスライドが ranking、「N位の景品」のスライドが prize N位 になっていることを確かめる
  * （同じ番号が2枚あるときは、最初の1枚だけが受付のスライドになる）。
  * 最後に画像を1枚だけ作って、Slides API が使えることを確かめる。
  */
@@ -1148,7 +1185,14 @@ function testSlides() {
     const texts = collectSlideTexts_(slide);
     const found = classifySlideTexts_(texts);
     const skipped = isSkipped_(slide);
-    const label = found.kind === "question" ? "question 第" + found.question + "問" : found.kind === "legacy" ? "（以前の回答数スライド・映さない）" : found.kind;
+    const label =
+      found.kind === "question"
+        ? "question 第" + found.question + "問"
+        : found.kind === "prize"
+          ? "prize " + found.place + "位"
+          : found.kind === "legacy"
+            ? "（以前の回答数スライド・映さない）"
+            : found.kind;
     const head = texts
       .map(function (t) {
         return String(t).replace(/\s+/g, " ").trim();
