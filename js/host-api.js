@@ -5,13 +5,15 @@
  *   スライド一覧   …/exec?action=slides&key=司会キー              司会キーが合うときだけ返る
  *   正解           …/exec?action=answers&key=司会キー             〃
  *   受付の切り替え …/exec?action=setOpen&key=司会キー&target=q5   〃
+ *   予想の的中者   …/exec?action=predHits&key=司会キー&n=3        〃（名前が返るのはこれだけ）
  *
  * 司会キーは URL（host.html?key=…）で一度だけ受け取り、この端末の localStorage に保存する。
  * リポジトリや config.js には書かない（正解とスライドを読めて、受付を切り替えられるキーなので）。
- * 正解は画面を開いている間だけメモリに持ち、どこにも保存しない。
+ * 正解と名前は画面を開いている間だけメモリに持ち、どこにも保存しない。
  */
 import { loadJson } from "./net.js";
 import { normalizeGate } from "./gate.js";
+import { normalizePredHits } from "./pred-result.js";
 
 const KEY_STORAGE = "wg-host-key";
 
@@ -89,6 +91,15 @@ export function fetchSlideList(url, key, refresh, options) {
 export async function fetchAnswers(url, key, options) {
   const data = await callWithKey(url, key, { action: "answers" }, options, (d) => d.answers && typeof d.answers === "object");
   return data.answers;
+}
+
+/**
+ * 予想が的中した人（そろった数 n を予想していた人）の名前を取得する。返すのは { n, count, names }。
+ * Code.gs が古いときは人数の JSON が返るので、code: "unsupported" の例外になる。
+ */
+export async function fetchPredHits(url, key, n, options) {
+  const data = await callWithKey(url, key, { action: "predHits", n: String(n) }, options, (d) => normalizePredHits(d, n) !== null);
+  return normalizePredHits(data, n);
 }
 
 /** 受付を切り替えて、切り替えたあとの受付状態を返す。target: "q1"〜"q10" / "pred" / "none" / "idle" */

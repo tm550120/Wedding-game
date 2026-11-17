@@ -11,6 +11,10 @@
  *   ←              … 正解を隠す → 前のスライドへ。締め切った問題に戻っても、受付は開け直さない
  *   O              … いまのスライドの問題の受付を開け直す（残り時間は最初から数え直す）
  *
+ * 「予想結果」のスライド（kind: "predResult"）では、司会者が実際にそろった数を 0〜5 のキーで入れると
+ * 「そろったのは 3問！」を映し、→ でその数を予想していた人の名前を映す（進み方は js/pred-result.js）。
+ * このスライドでは受付を開けない（ゲストのスマホは「お待ちください」のまま）。
+ *
  * 残り時間を数えるのは、受付を開ける操作をしたこの画面だけ。再読み込みしたり別の端末で開いたりした画面は、
  * 受付中の問題を映していても数えない（勝手に締め切らない）。
  *
@@ -21,16 +25,18 @@
  * スライドを取得できないとき（司会キーがない / ?panel=1 / 取得に失敗）は、第1問〜第10問と予想を
  * 1枚ずつ並べた仮のスライドで同じように動く。司会キーがないときは受付を切り替えられず、人数を映すだけになる。
  *
- * 映すのは人数の合計だけ（選択肢ごとの人数は Apps Script からも届かない）。名前も届かない。
- * 正解は司会キーで取得して、この画面のメモリにだけ持つ。
+ * 映すのは人数の合計だけ（選択肢ごとの人数は Apps Script からも届かない）。
+ * 名前が届くのは「予想結果」のスライドで的中した人を取得するときだけ（司会キーが要る）。
+ * 正解と名前は司会キーで取得して、この画面のメモリにだけ持つ。
  */
 import { HOST } from "./config.js";
-import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, sendSetOpen, isFatal } from "./host-api.js";
+import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, fetchPredHits, sendSetOpen, isFatal } from "./host-api.js";
 import { createDemoBackend } from "./host-demo.js";
 import { panelSlides } from "./host-panel.js";
 import { createPoller } from "./poller.js";
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate, revealRequest } from "./gate.js";
 import { autoCloseSeconds, countdownView } from "./countdown.js";
+import { PRED_START, matchedCountOf, predStep, stepPred, predHint, namesLayout, nameScale } from "./pred-result.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -46,7 +52,7 @@ const net = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
 
 /*
  * Apps Script とのやり取り一式。null なら未設定。
- * loadSlides / loadAnswers / setOpen は司会キーが要るので、キーがなければ null（表示のみになる）。
+ * loadSlides / loadAnswers / loadPredHits / setOpen は司会キーが要るので、キーがなければ null（表示のみになる）。
  */
 const backend = DEMO
   ? createDemoBackend()
@@ -56,6 +62,7 @@ const backend = DEMO
         loadStats: () => fetchStats(HOST.statsUrl, net),
         loadSlides: hostKey ? (refresh) => fetchSlideList(HOST.statsUrl, hostKey, refresh, { ...net, timeoutMs: HOST.slidesTimeoutMs }) : null,
         loadAnswers: hostKey ? () => fetchAnswers(HOST.statsUrl, hostKey, net) : null,
+        loadPredHits: hostKey ? (n) => fetchPredHits(HOST.statsUrl, hostKey, n, net) : null,
         setOpen: hostKey ? (target) => sendSetOpen(HOST.statsUrl, hostKey, target, net) : null,
       };
 const loadSlides = PANEL_ONLY ? null : backend?.loadSlides || null;
@@ -70,6 +77,8 @@ const state = {
   stats: null,       // 最後に取得できた人数（取得に失敗しても消さない）
   answers: null,     // 正解 { "1": "B", … }。まだ取得できていなければ null
   revealed: false,   // いまのスライドで正解を映しているか
+  pred: PRED_START,  // 「予想結果」のスライドの段 { n: そろった数 | null, step: "input" | "count" | "names" }
+  hits: null,        // 的中した人の取得状況 { n, status, count, names, message }（js/pred-result.js の namesReady を参照）
   missing: "",       // スライドに目印が見つからない問題（1枚目でだけ知らせる）
   errors: {},
 };
@@ -84,6 +93,7 @@ function targetOf(slide) {
 }
 
 const currentTarget = () => targetOf(state.slides[state.slide]);
+const isPredResult = (slide) => slide?.kind === "predResult";
 const isQuestion = (target) => target !== "pred";
 
 /** その対象の受付の状態。"open" = 受付中 / "closed" = 締め切り済み / "ready" = まだ開けていない */
@@ -233,11 +243,51 @@ function hintFor(target, view) {
   return (isQuestion(target) ? "→ 正解を表示" : "→ 次へ") + " ／ O 受付を再開";
 }
 
+/** 「予想結果」のスライドの表示。step: いま映す段（"input" / "count" / "names"）。このスライドでなければ null。 */
+function renderPredResult(step) {
+  $("pred-prompt").classList.toggle("hidden", step !== "input");
+  $("pred-names").classList.toggle("hidden", step !== "names");
+  if (step !== "names") return;
+
+  const { n } = state.pred;
+  const loaded = state.hits.status === "ok";
+  const names = loaded ? state.hits.names : [];
+  const count = loaded ? state.hits.count : 0;
+  $("pred-names-kicker").textContent = "✦ そろったのは " + n + "問 ✦";
+  $("pred-names-count").textContent = loaded ? String(count) : "…";
+
+  // 名前の一覧は、中身が変わったときだけ作り直す（定期更新のたびにアニメーションをやり直さない）
+  const grid = $("pred-names-grid");
+  const signature = n + "\n" + names.join("\n");
+  if (grid.dataset.signature !== signature) {
+    grid.dataset.signature = signature;
+    const layout = namesLayout(names.length);
+    grid.style.setProperty("--cols", String(layout.columns));
+    grid.style.setProperty("--name-width", layout.width + "vh");
+    grid.style.setProperty("--name-font", layout.font + "vh");
+    grid.replaceChildren(
+      ...names.map((name, i) => {
+        const item = el("li", "", name);
+        item.style.setProperty("--scale", String(nameScale(name, layout.fit)));
+        item.style.setProperty("--i", String(i));
+        return item;
+      })
+    );
+  }
+  grid.classList.toggle("hidden", names.length === 0);
+
+  // 名前を出せないとき: 読み込み中 / 的中した人がいない / 名前のない回答だけ
+  const message = !loaded ? "読み込み中…" : count === 0 ? "ぴったり当てた人はいませんでした…！\nみなさん、惜しかったです" : "";
+  $("pred-names-message").textContent = message;
+  $("pred-names-message").classList.toggle("hidden", names.length > 0);
+}
+
 /** 画面全体を、いまの状態に合わせる。 */
 function render() {
   const current = state.slides[state.slide];
   const target = targetOf(current);
   const view = target ? viewOf(target) : null;
+  const predView = isPredResult(current) ? predStep(state.pred, state.hits) : null;
 
   // スライド
   state.slides.forEach((slide) => slide.el.classList.toggle("current", slide === current));
@@ -245,7 +295,7 @@ function render() {
   $("stage-message").classList.toggle("hidden", !showMessage);
   $("stage-message").textContent = current?.failed ? "スライドの画像を読み込めません（再試行中）" : "スライドを読み込み中…";
   $("slide-pos").textContent = current ? state.slide + 1 + " / " + state.slides.length : "";
-  $("hint").textContent = hintFor(target, view);
+  $("hint").textContent = predView ? predHint(state.pred, state.hits) : hintFor(target, view);
 
   // 受付の状態と人数（問題のスライドのときだけ）
   $("gate").classList.toggle("hidden", !target);
@@ -257,9 +307,19 @@ function render() {
   }
   renderCountdown();
 
+  // 予想結果（そろった数は、正解の発表と同じ札で映す）
+  renderPredResult(predView);
+  $("reveal").classList.toggle("pred", predView === "count");
+  if (predView === "count") {
+    $("reveal").classList.remove("missing");
+    $("reveal-kicker").textContent = "✦ 以心伝心ゲーム ✦";
+    $("reveal-label").textContent = "そろったのは";
+    $("reveal-answer").textContent = state.pred.n + "問！";
+  }
+
   // 正解
   const revealing = Boolean(target) && state.revealed;
-  $("reveal").classList.toggle("hidden", !revealing);
+  $("reveal").classList.toggle("hidden", !revealing && predView !== "count");
   if (revealing) {
     const answer = state.answers?.[String(parseTarget(target).index + 1)];
     $("reveal").classList.toggle("missing", !answer);
@@ -289,6 +349,12 @@ function setError(source, message) {
 function goTo(index, how) {
   const next = Math.min(Math.max(index, 0), state.slides.length - 1);
   if (how !== "init" && next === state.slide) return;
+  // 「予想結果」のスライドは、来るたびに数の入力から。次のスライドから ← で戻ってきたときだけ、発表した続きから
+  //（そのために、ほかのスライドにいる間も state.pred は消さない）。
+  // スライド一覧の読み直し（"init"）で同じスライドに留まるときは、発表の途中の段をそのまま保つ
+  if (isPredResult(state.slides[next]) && !(how === "init" && next === state.slide)) {
+    state.pred = how === "back" ? stepPred(state.pred, "return", state.hits).pred : PRED_START;
+  }
   state.slide = next;
   state.revealed = false;
 
@@ -326,6 +392,14 @@ function requestReveal() {
 
 /** → / クリック。問題のスライドでは「受付 → 締め切り → 正解」と1段ずつ進み、最後に次のスライドへ。 */
 function advance() {
+  if (isPredResult(state.slides[state.slide])) {
+    const { pred, leave } = stepPred(state.pred, "advance", state.hits);
+    if (!leave) {
+      state.pred = pred;
+      render();
+      return;
+    }
+  }
   const target = currentTarget();
   if (target) {
     const view = viewOf(target);
@@ -351,6 +425,14 @@ function advance() {
  * Apps Script の setOpen には「開け直さずに lastClosed だけを戻す」切り替えがないため。
  */
 function retreat() {
+  if (isPredResult(state.slides[state.slide])) {
+    const { pred, leave } = stepPred(state.pred, "retreat", state.hits);
+    if (!leave) {
+      state.pred = pred;
+      render();
+      return;
+    }
+  }
   if (state.revealed) {
     state.revealed = false;
     render();
@@ -365,6 +447,48 @@ function reopen() {
   if (!target || !writable() || viewOf(target) === "open") return;
   state.revealed = false;
   requestGate(target);
+  render();
+}
+
+/** 「予想結果」のスライドで 0〜5 のキー。実際にそろった数を入れて（入れ直して）、その数を予想していた人を取得する。 */
+function enterMatchedCount(n) {
+  state.pred = stepPred(state.pred, n, state.hits).pred;
+  loadPredHits(n);
+  render();
+}
+
+let hitsSeq = 0; // 取得のたびに増える。数を入れ直したあとに届いた、前の数の結果を捨てるために使う
+
+/** 的中した人の名前を取得する（司会キーが要る）。通信エラーは3回まで試す。失敗しても「そろったのは」は映せる。 */
+async function loadPredHits(n) {
+  const seq = ++hitsSeq;
+  if (!backend?.loadPredHits) {
+    state.hits = { n, status: "nokey" };
+    return;
+  }
+  state.hits = { n, status: "loading" };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await backend.loadPredHits(n);
+      if (seq !== hitsSeq) return;
+      state.hits = { n, status: "ok", count: res.count, names: res.names };
+      break;
+    } catch (e) {
+      if (seq !== hitsSeq) return;
+      if (e.code) {
+        // 待っても直らない（Code.gs が古い・キー違い・予想のシートを読めない など）
+        const status = e.code === "unsupported" ? "unsupported" : e.code === "unauthorized" ? "nokey" : "failed";
+        state.hits = { n, status, message: e.message };
+        break;
+      }
+      if (attempt === 3) {
+        state.hits = { n, status: "error" };
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      if (seq !== hitsSeq) return;
+    }
+  }
   render();
 }
 
@@ -581,8 +705,13 @@ function initControls() {
     else if (key === "r" || key === "R") {
       refreshSlides("all");
       refreshAnswers();
-    } else if (/^[0-9]$/.test(key)) jumpToTarget("q" + (key === "0" ? 10 : key));
-    else if (key === "p" || key === "P") jumpToTarget("pred");
+    } else if (/^[0-9]$/.test(key)) {
+      // 「予想結果」のスライドでは、数字キーは「そろった数」の入力（6〜9 は何もしない）。問題へは飛ばない
+      if (isPredResult(state.slides[state.slide])) {
+        const n = matchedCountOf(key);
+        if (n !== null) enterMatchedCount(n);
+      } else jumpToTarget("q" + (key === "0" ? 10 : key));
+    } else if (key === "p" || key === "P") jumpToTarget("pred");
     else return;
     e.preventDefault();
   });

@@ -203,7 +203,7 @@ test("failed: 司会キーが違う・無いときは、受付の切り替え・
 test("failed: 司会キーが未設定なら not_configured（空のキーで通さない）", () => {
   for (const props of [{}, { HOST_KEY: "short" }]) {
     const env = load({ props, sheets: { 正解: ANSWER_SHEET } });
-    for (const action of ["setOpen", "answers", "reset", "slides"]) {
+    for (const action of ["setOpen", "answers", "reset", "slides", "predHits"]) {
       assert.equal(env.get({ action, key: props.HOST_KEY || "", target: "q1" }).error, "not_configured");
     }
     assert.equal(env.get({ action: "state" }).open, null);
@@ -324,6 +324,160 @@ test("success: シートが無い・タイムスタンプの列が無いとき�
   assert.match(stats.errors[0], /タイムスタンプ/);
 });
 
+/* ===== 予想が的中した人（?action=predHits） ===== */
+
+/** 予想の受付を 100〜160 秒に開けた環境。rows は予想のシートの行（見出しを除く）。 */
+function predEnv(rows, header = PRED_HEADER) {
+  const env = load({ sheets: { [QUIZ_SHEET]: [QUIZ_HEADER, quizRow(5, "クイズだけの人", 1, "A")], [PRED_SHEET]: [header, ...rows], 正解: ANSWER_SHEET } });
+  env.setOpen("q1", 0);
+  env.setOpen("pred", 100);
+  env.setOpen("none", 160);
+  env.at(300);
+  return env;
+}
+const hits = (env, n) => env.get({ action: "predHits", key: HOST_KEY, n });
+
+const PRED_ROWS = [
+  predRow(110, "たなか", "3問"),
+  predRow(111, "　さとう　", "３問"), // 全角の数字・名前の前後の空白
+  predRow(112, "あいだ", 3), // 数値のセル
+  predRow(113, "やまだ", "2問"),
+  predRow(114, "すずき", "5問"),
+  predRow(115, "山田  太郎", "3問"), // 途中の空白の連続は1つにする
+];
+
+test("success: predHits は、その数を予想した人の名前を日本語の並び順で返す", () => {
+  const env = predEnv(PRED_ROWS);
+  const res = hits(env, "3");
+  assert.deepEqual(Object.keys(res).sort(), ["count", "n", "names", "updatedAt"]);
+  assert.equal(res.n, 3);
+  assert.equal(res.count, 4);
+  assert.deepEqual([...res.names], ["あいだ", "さとう", "たなか", "山田 太郎"]);
+  assert.deepEqual([...hits(env, "2").names], ["やまだ"]);
+  assert.deepEqual([...hits(env, "5").names], ["すずき"]);
+  // 人数は、集計の選択肢ごとの人数と同じ
+  const pred = env.buildStats_(env.readGate_()).pred;
+  for (let n = 0; n <= 5; n++) assert.equal(hits(env, String(n)).count, pred[n + "問"], n + "問");
+});
+
+test("success: predHits で的中した人がいなければ、空の一覧を返す", () => {
+  const res = hits(predEnv(PRED_ROWS), "0");
+  assert.deepEqual([res.n, res.count, [...res.names]], [0, 0, []]);
+  const empty = hits(predEnv([]), "3");
+  assert.deepEqual([empty.n, empty.count, [...empty.names]], [3, 0, []]);
+});
+
+test("success: predHits は同じ名前の最新の予想だけを見る（送り直しで外れた人は入らない・当たった人は入る）", () => {
+  const env = predEnv([
+    predRow(110, "たなか", "3問"),
+    predRow(120, "たなか", "4問"), // 3問 → 4問 に送り直した
+    predRow(111, "さとう", "1問"),
+    predRow(121, "ｻﾄｳ", "2問"), // 別の人（カタカナ）
+    predRow(125, " さとう", "3問"), // 1問 → 3問 に送り直した（空白のゆれは同じ人）
+    predRow(112, "ＡＢＣ", "3問"),
+    predRow(126, "ABC", "3問"), // 全角/半角のゆれは同じ人。名前は最新の行の書き方で出す
+    predRow(130, "", "3問"), // 名前のない行は1人に数えるが、名前の一覧には入らない
+  ]);
+  const three = hits(env, "3");
+  assert.deepEqual([...three.names].sort(), ["ABC", "さとう"]);
+  assert.equal(three.count, 3);
+  assert.deepEqual([...hits(env, "4").names], ["たなか"]);
+  assert.deepEqual([...hits(env, "1").names], []);
+  assert.deepEqual([...hits(env, "2").names], ["ｻﾄｳ"]);
+});
+
+test("success: predHits は受付時間内の予想だけを見る（受付前・締め切り後の行は入らない）", () => {
+  const env = predEnv([
+    predRow(50, "早井", "3問"), // 受付前にフォームへ直接送った
+    predRow(99.5, "境", "3問"), // 開ける1秒前まで（時計のずれの分）は入る
+    predRow(130, "山田", "3問"),
+    predRow(164, "滑込", "3問"), // 締め切り（160秒）の4秒後 → 入る
+    predRow(170, "遅井", "3問"), // 締め切りの10秒後 → 入らない
+    predRow(140, "佐藤", "3問"),
+    predRow(200, "佐藤", "0問"), // 締め切り後の送り直しでは、受付中の予想は上書きされない
+    predRow(141, "鈴木", "1問"),
+    predRow(210, "鈴木", "3問"), // 締め切り後に結果を見てから送り直しても、的中にはならない
+    ["", "時刻なし", "3問"], // タイムスタンプが無い行は入らない
+  ]);
+  assert.deepEqual([...hits(env, "3").names].sort(), ["佐藤", "境", "山田", "滑込"].sort());
+  assert.equal(hits(env, "3").count, 4);
+  assert.equal(hits(env, "0").count, 0);
+  assert.deepEqual([...hits(env, "1").names], ["鈴木"]);
+
+  // 予想を一度も受け付けていなければ、行があっても誰も入らない / 受付の記録を消したあとも同じ
+  const never = load({ sheets: { [PRED_SHEET]: [PRED_HEADER, predRow(130, "山田", "3問")] } });
+  assert.deepEqual([...hits(never, "3").names], []);
+  env.get({ action: "reset", key: HOST_KEY });
+  assert.equal(hits(env, "3").count, 0);
+
+  // O キーで開け直した時間の予想は入る
+  const reopened = predEnv([predRow(130, "山田", "3問"), predRow(405, "遅刻", "3問")]);
+  reopened.setOpen("pred", 400);
+  reopened.setOpen("none", 410);
+  assert.equal(hits(reopened, "3").count, 2);
+});
+
+test("failed: predHits は司会キーが違う・無いときは名前を返さない", () => {
+  const env = predEnv(PRED_ROWS);
+  for (const key of [undefined, "", "wrong", HOST_KEY + "x", HOST_KEY.slice(0, -1), HOST_KEY.toUpperCase()]) {
+    for (const n of [undefined, "3", "9"]) {
+      const text = env.raw({ action: "predHits", key, n });
+      assert.deepEqual(Object.keys(JSON.parse(text)), ["error", "message"]);
+      assert.equal(JSON.parse(text).error, "unauthorized");
+      for (const name of ["たなか", "さとう", "あいだ", "やまだ", "すずき", "山田"]) assert.ok(!text.includes(name), name);
+    }
+  }
+  for (const props of [{}, { HOST_KEY: "short" }]) {
+    const unset = load({ props, sheets: { [PRED_SHEET]: [PRED_HEADER, predRow(5, "たなか", "3問")] } });
+    const text = unset.raw({ action: "predHits", key: props.HOST_KEY || "", n: "3" });
+    assert.equal(JSON.parse(text).error, "not_configured");
+    assert.ok(!text.includes("たなか"));
+  }
+});
+
+test("failed: predHits の n が 0〜5 の整数でなければ bad_request（名前は返さない）", () => {
+  const env = predEnv(PRED_ROWS);
+  for (const n of [undefined, "", "6", "-1", "10", "03", "3.0", "1.5", "3問", "３", " 3", "abc", "NaN", "__proto__", "0x3", "1e0"]) {
+    const text = env.raw({ action: "predHits", key: HOST_KEY, n });
+    assert.deepEqual(Object.keys(JSON.parse(text)), ["error", "message"], String(n));
+    assert.equal(JSON.parse(text).error, "bad_request", String(n));
+    assert.ok(!text.includes("たなか"), String(n));
+  }
+});
+
+test("failed: 予想のシートを読めなければ pred_error", () => {
+  const env = load({ sheets: {} });
+  assert.equal(hits(env, "3").error, "pred_error");
+  const noTs = load({ sheets: { [PRED_SHEET]: [PRED_HEADER.slice(1), ["山田", "3問"]] } });
+  const text = noTs.raw({ action: "predHits", key: HOST_KEY, n: "3" });
+  assert.equal(JSON.parse(text).error, "pred_error");
+  assert.ok(!text.includes("山田"));
+});
+
+test("success: 司会キーのない応答には、どの呼び出しでも名前が含まれない（predHits を呼んだあとも）", () => {
+  const env = predEnv(PRED_ROWS);
+  assert.equal(hits(env, "3").count, 4); // 司会キー付きで名前を取得したあとでも、キャッシュなどから漏れない
+  const names = ["たなか", "さとう", "あいだ", "やまだ", "すずき", "山田", "太郎", "クイズだけの人"];
+  const actions = [undefined, "state", "predHits", "answers", "slides", "setOpen", "reset", "unknown"];
+  for (const action of actions) {
+    for (const extra of [{}, { n: "3" }, { n: "3", key: "wrong" }, { n: "3", key: "" }, { n: "3", callback: "cb" }]) {
+      const text = env.raw({ action, ...extra });
+      for (const name of names) assert.ok(!text.includes(name), JSON.stringify({ action, ...extra }) + " " + name);
+      assert.ok(!text.includes("names"), JSON.stringify({ action, ...extra }));
+    }
+  }
+  for (const value of env.cacheStore.values()) for (const name of names) assert.ok(!String(value).includes(name));
+  // 司会キー付きでも、名前を返すのは predHits だけ
+  for (const params of [{}, { action: "state" }, { action: "answers" }, { action: "setOpen", target: "idle" }]) {
+    const text = env.raw({ ...params, key: HOST_KEY });
+    for (const name of names) assert.ok(!text.includes(name), JSON.stringify(params) + " " + name);
+  }
+  // JSONP でも返せる（司会キー付き）
+  const jsonp = env.doGet({ parameter: { action: "predHits", key: HOST_KEY, n: "2", callback: "cb1" } });
+  assert.equal(jsonp.mime, "JAVASCRIPT");
+  assert.match(jsonp.text, /^cb1\(\{.*"names":\["やまだ"\].*\}\);$/);
+});
+
 /* ===== 正解（?action=answers） ===== */
 
 test("success: 正解は司会キーが合うときだけ返す（見出し・範囲外・空欄の行は飛ばす）", () => {
@@ -364,6 +518,16 @@ const classifyCases = {
   "success: 以心伝心ゲームの題名スライドは普通のスライド": [["Telepathy Game", "以心伝心ゲーム", "「せーの！」で答えをそろえよう", "全5問"], { kind: "slide" }],
   "success: 以心伝心ゲームのお題は普通のスライド": [["以心伝心ゲーム", "1 / 5", "お題 1", "[お題1がここに入ります]", "せーの！"], { kind: "slide" }],
   "success: 文中の 予想 は目印ではない": [["結果を予想してみましょう"], { kind: "slide" }],
+  "success: 予想結果（題名）": [["以心伝心ゲーム", "予想結果"], { kind: "predResult" }],
+  "success: 予想の結果 / 全角・空白・改行": [["予想 の\n結果　"], { kind: "predResult" }],
+  "success: 予想結果発表！": [["予想結果発表！"], { kind: "predResult" }],
+  "success: 以心伝心ゲーム 予想の結果発表": [["以心伝心ゲーム 予想の結果発表"], { kind: "predResult" }],
+  "success: 予想的中者発表": [["予想的中者発表："], { kind: "predResult" }],
+  "success: 予想結果のスライドに 何問そろ があっても、予想の受付は開けない": [["予想結果", "新郎新婦の答えは 何問そろったでしょう？"], { kind: "predResult" }],
+  "success: 予想タイム は予想結果ではない": [["予想タイム", "結果はあとで発表します"], { kind: "prediction" }],
+  "success: 文中の 予想 と 結果 は目印ではない": [["予想の結果は最後に発表します", "結果を予想してみましょう"], { kind: "slide" }],
+  "success: 結果発表 だけでは予想結果ではない": [["結果発表", "的中者"], { kind: "slide" }],
+  "success: 問題の題名は予想結果より優先": [["Q3", "予想結果"], { kind: "question", question: 3 }],
   "success: 以前の 第N問 回答数 は映さない": [["第5問 回答数", "回答数のグラフをここに貼ります"], { kind: "legacy" }],
   "success: 以前の Q5 回答数 は映さない": [["Q5：回答数"], { kind: "legacy" }],
   "success: 以前の 予想 回答数 は映さない": [["予想 回答数"], { kind: "legacy" }],
@@ -412,6 +576,17 @@ test("success: 種類・問題番号・画像URLを返し、IDや文字は返さ
   assert.equal(res.errors, undefined);
   assert.deepEqual(env.calls.thumbnails, DECK_IDS);
   for (const secret of [DECK_ID, HOST_KEY, "正解", "Thank"]) assert.ok(!out.text.includes(secret), secret);
+});
+
+test("success: 予想結果のスライドは predResult で返す（2枚目は普通のスライド。文字は返さない）", () => {
+  const deck = [
+    slide("r1", [shape("予想タイム"), shape("何問そろいますか？")]),
+    slide("r2", [shape("以心伝心ゲーム"), group(shape("予想結果"))]),
+    slide("r3", [shape("予想結果"), shape("おめでとうございます")]),
+  ];
+  const out = load({ slides: deck }).doGet({ parameter: { action: "slides", key: HOST_KEY } });
+  assert.deepEqual(JSON.parse(out.text).slides.map((s) => [s.objectId, s.kind]), [["r1", "prediction"], ["r2", "predResult"], ["r3", "slide"]]);
+  assert.ok(!out.text.includes("予想結果"));
 });
 
 test("success: 2回目はキャッシュを使い、refresh で作り直す", () => {

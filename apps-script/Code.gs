@@ -14,6 +14,8 @@
  *     …/exec?action=setOpen&target=q5|pred|none|idle → 受付の切り替え。{ "ok": true, "state": {…} }
  *     …/exec?action=answers                          → 正解の一覧。{ "answers": { "1": "B", … }, "missing": [3] }
  *     …/exec?action=slides                           → スライド一覧（下の「スライド一覧」を参照）
+ *     …/exec?action=predHits&n=3                     → 予想が的中した人の名前。{ "n": 3, "count": 2, "names": ["…", "…"] }
+ *                                                      （n は実際にそろった数 0〜5。名前を返すのはこの呼び出しだけ）
  *     …/exec?action=reset                            → 受付の記録をすべて消す（リハーサルのあと）
  *
  *   どれも ?callback=関数名 を付けると JSONP で返す（fetch が使えない環境向けの予備）。
@@ -111,6 +113,7 @@ function doGet(e) {
   if (params.action === "answers") return respond_(JSON.stringify(buildAnswersResponse_(params)), params.callback);
   if (params.action === "reset") return respond_(JSON.stringify(handleReset_(params)), params.callback);
   if (params.action === "slides") return respond_(JSON.stringify(buildSlidesResponse_(params)), params.callback);
+  if (params.action === "predHits") return respond_(JSON.stringify(buildPredHitsResponse_(params)), params.callback);
   return respond_(getStatsJson_(), params.callback);
 }
 
@@ -241,8 +244,12 @@ function aggregateQuiz_(rows, windows) {
   return quiz;
 }
 
-/** 予想の集計。受付時間内の行だけを対象にし、同じ名前は最新の行だけを数える。 */
-function aggregatePred_(rows, windows) {
+/**
+ * 予想の有効な回答を集める。rows[0] が見出し。返すのは 回答者キー → { value: "3問", ts, name }。
+ * 受付時間内の行だけを対象にし、同じ名前は最新の行だけを残す。name はその行に書かれた名前（前後の空白を除く）。
+ * 人数の集計（aggregatePred_）と、的中した人の名前（predHitNames_）の両方がこれを使う。
+ */
+function collectPred_(rows, windows) {
   const header = (rows[0] || []).map(normalize_);
   const nameCol = findColumn_(header, NAME_HEADER_KEYWORD);
   if (nameCol < 0) throw new Error("見出しに「" + NAME_HEADER_KEYWORD + "」を含む列がありません");
@@ -263,9 +270,39 @@ function aggregatePred_(rows, windows) {
     const value = normalizePred_(row[predCol]);
     const ts = timestampOf_(row[tsCol]);
     if (value === null || !inWindows_(ts, (windows || {}).pred)) continue;
-    keepLatest_(latest, respondentKey_(row[nameCol], r), value, ts);
+    keepLatest_(latest, respondentKey_(row[nameCol], r), value, ts, displayName_(row[nameCol]));
   }
-  return countValues_(latest, PRED_CHOICES);
+  return latest;
+}
+
+/** 予想の集計。受付時間内の行だけを対象にし、同じ名前は最新の行だけを数える。 */
+function aggregatePred_(rows, windows) {
+  return countValues_(collectPred_(rows, windows), PRED_CHOICES);
+}
+
+/**
+ * 予想が label（"3問" など）だった人。集計と同じ決まり（受付時間内・同じ名前は最新の行だけ）で選ぶ。
+ * 返すのは { count, names }。count は集計の「3問」の人数と同じ（名前が空の行も1人に数える）。
+ * names は名前の一覧で、日本語の並び順（かなは五十音順。漢字は読みではなく文字の順）に並べる。
+ * 並べ替えができない環境では、シートに現れた順のままにする。
+ */
+function predHitNames_(rows, windows, label) {
+  const latest = collectPred_(rows, windows);
+  const names = [];
+  let count = 0;
+  for (const who in latest) {
+    if (latest[who].value !== label) continue;
+    count += 1;
+    if (latest[who].name) names.push(latest[who].name);
+  }
+  try {
+    names.sort(function (a, b) {
+      return a.localeCompare(b, "ja");
+    });
+  } catch (err) {
+    /* 並べ替えられなければ、シートに現れた順のまま */
+  }
+  return { count: count, names: names };
 }
 
 /* ===================== 小さな部品 ===================== */
@@ -328,6 +365,12 @@ function respondentKey_(name, rowIndex) {
   return text === "" ? "row:" + rowIndex : "name:" + text;
 }
 
+/** 画面に出す名前。書かれた文字はそのままに、前後の空白を除き、途中の空白の連続を1つにする。 */
+function displayName_(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
 function timestampOf_(value) {
   return Object.prototype.toString.call(value) === "[object Date]" ? value.getTime() : NaN;
 }
@@ -337,10 +380,11 @@ function timestampOf_(value) {
  * 基本は下の行ほど新しい。両方にタイムスタンプがあり、明らかに古い行のときだけ上書きしない
  * （シートを手で並べ替えた場合への備え）。
  */
-function keepLatest_(map, who, value, ts) {
+function keepLatest_(map, who, value, ts, name) {
   const prev = map[who];
   if (prev && !isNaN(prev.ts) && !isNaN(ts) && ts < prev.ts) return;
   map[who] = { value: value, ts: ts };
+  if (name !== undefined) map[who].name = name; // 予想だけ。その人の最新の行に書かれた名前
 }
 
 function countValues_(latestByWho, choices) {
@@ -590,6 +634,31 @@ function testAnswers() {
   Logger.log(JSON.stringify(readAnswerKey_()));
 }
 
+/* ===================== 予想が的中した人（?action=predHits&key=司会キー&n=3） ===================== */
+
+/**
+ * 司会画面の「予想結果」のスライド用。実際にそろった数 n（0〜5）を予想していた人の名前を返す。
+ * 名前を返すのはこの呼び出しだけで、司会キーが合うときだけ返す。キャッシュには置かない。
+ *   { "updatedAt": "…", "n": 3, "count": 2, "names": ["…", "…"] }
+ *   失敗時は { "error": "unauthorized" | "not_configured" | "bad_request" | "pred_error", "message": "…" }
+ */
+function buildPredHitsResponse_(params) {
+  const denied = authorize_(params);
+  if (denied) return denied;
+  const text = params.n === null || params.n === undefined ? "" : String(params.n);
+  const label = /^\d$/.test(text) ? Number(text) + "問" : "";
+  if (PRED_CHOICES.indexOf(label) < 0) {
+    return { error: "bad_request", message: "n は 0〜" + (PRED_CHOICES.length - 1) + " の整数です" };
+  }
+  let hits;
+  try {
+    hits = predHitNames_(readRows_(PRED_SPREADSHEET_ID || QUIZ_SPREADSHEET_ID, PRED_SHEET_NAME), readGate_().windows, label);
+  } catch (err) {
+    return { error: "pred_error", message: "予想を読めません: " + err.message };
+  }
+  return { updatedAt: new Date().toISOString(), n: Number(text), count: hits.count, names: hits.names };
+}
+
 /* ===================== スライド一覧（?action=slides&key=司会キー） ===================== */
 
 /*
@@ -600,7 +669,8 @@ function testAnswers() {
  *     "slides": [
  *       { "objectId": "p",   "kind": "slide",      "imageUrl": "https://lh7-…googleusercontent.com/…" },
  *       { "objectId": "g12", "kind": "question",   "imageUrl": "https://…", "question": 5 },
- *       { "objectId": "g34", "kind": "prediction", "imageUrl": "https://…" }
+ *       { "objectId": "g34", "kind": "prediction", "imageUrl": "https://…" },
+ *       { "objectId": "g56", "kind": "predResult", "imageUrl": "https://…" }
  *     ],
  *     "pending": 0            // まだ画像を作れていない枚数。0 より大きければ、少し待ってもう一度呼ぶ
  *   }
@@ -609,6 +679,7 @@ function testAnswers() {
  * kind の決め方（スライド上の文字で判定する。ページ番号や並び順には依存しない）:
  *   question   … 第N問のスライド。司会画面は、このスライドを映している間だけ第N問の回答を受け付ける
  *   prediction … 以心伝心ゲーム予想を尋ねるスライド。映している間だけ予想を受け付ける
+ *   predResult … 予想の結果を発表するスライド。司会画面が、そろった数と的中した人の名前を重ねて映す（受付は開けない）
  *   slide      … それ以外。スライドの画像をそのまま映す
  *   詳しい条件は classifySlideTexts_ を参照。
  *
@@ -691,7 +762,7 @@ function getSlideList_(deckId, skipCache) {
 
 function readSlideList_(deckId) {
   const list = [];
-  const seen = {}; // 同じ問題番号・予想のスライドが2枚あったら、最初の1枚だけを受付のスライドにする
+  const seen = {}; // 同じ問題番号・予想・予想結果のスライドが2枚あったら、最初の1枚だけをその種類にする
   SlidesApp.openById(deckId).getSlides().forEach(function (slide) {
     if (isSkipped_(slide)) return;
     const found = classifySlideTexts_(collectSlideTexts_(slide));
@@ -763,6 +834,10 @@ function normalizeMarker_(text) {
 const QUESTION_TITLE_RE = /^(?:第(\d{1,2})問目?|Q(?:UESTION)?\.?(\d{1,2}))[.:。]?$/;
 // 予想のスライドの題名。1つのテキストボックスが、これだけでできている。「予想タイム」「予想」「以心伝心ゲーム予想」など
 const PRED_TITLE_RE = /^(?:以心伝心(?:ゲーム)?の?)?予想(?:タイム|クイズ)?[!.:。]?$/;
+// 予想の結果を発表するスライドの題名。1つのテキストボックスが、これだけでできている。
+// 「予想結果」「予想の結果」「予想結果発表」「予想的中」「予想的中者発表」「以心伝心ゲーム予想結果」など。
+// 予想のスライドの題名（PRED_TITLE_RE）とは重ならない（「結果」か「的中」が必ず付く）
+const PRED_RESULT_TITLE_RE = /^(?:以心伝心(?:ゲーム)?の?)?予想の?(?:結果|的中)者?(?:発表)?[!.:。]*$/;
 // 予想の質問文そのもの。スライドのどこかにあればよい。「…5問中何問そろいますか？」「何問揃う？」
 const PRED_QUESTION_RE = /何問(?:そろ|揃)/;
 // 以前の「第N問 回答数」スライドの題名（いまは使わないので、スライドショーから外す）
@@ -775,10 +850,13 @@ const LEGACY_COUNTS_RE = /(?:第\d{1,2}問目?|Q\.?\d{1,2})[-‐–—―:・|\/
  * 1. question: 「第N問」または「QN」（N は 1〜10）だけが書かれたテキストボックスがある。
  *    例: 題名の箱に「Q5」「第5問」。「第5問 正解」「第5問 回答数」「Q5 解説」のように続きがある箱は当てはまらない。
  *    違う番号の題名が2つ以上あるスライドは、どの問題か決められないので slide にする。
- * 2. prediction: 「予想タイム」（または「予想」「以心伝心ゲーム予想」）だけが書かれたテキストボックスがある、
+ * 2. predResult: 「予想結果」（または「予想の結果」「予想結果発表」「予想的中」など）だけが書かれたテキストボックスがある。
+ *    予想より先に調べる（結果のスライドに「何問そろったでしょう？」と書いてあっても、予想の受付は開けない）。
+ *    「結果を予想してみましょう」のような文や、「予想結果は最後に発表します」のように続きがある箱は当てはまらない。
+ * 3. prediction: 「予想タイム」（または「予想」「以心伝心ゲーム予想」）だけが書かれたテキストボックスがある、
  *    またはスライドのどこかに「何問そろ」（何問揃）がある。例: 「新郎新婦の答えは5問中何問そろいますか？」
- * 3. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
- * 4. それ以外は slide。
+ * 4. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
+ * 5. それ以外は slide。
  */
 function classifySlideTexts_(texts) {
   const boxes = (texts || []).map(normalizeMarker_).filter(String);
@@ -793,6 +871,11 @@ function classifySlideTexts_(texts) {
   const found = Object.keys(numbers);
   if (found.length === 1) return { kind: "question", question: Number(found[0]) };
   if (found.length > 1) return { kind: "slide" };
+
+  const isPredResultTitle = function (box) {
+    return PRED_RESULT_TITLE_RE.test(box);
+  };
+  if (boxes.some(isPredResultTitle)) return { kind: "predResult" };
 
   const isPredTitle = function (box) {
     return PRED_TITLE_RE.test(box);
@@ -898,7 +981,7 @@ function setupHostKey() {
 /**
  * 権限の承認と、スライドの種類の判定結果の確認をするための関数。
  * 実行ログに「ページ番号: 種類 | スライド上の文字の先頭」を出す（このログはエディタでしか見えない）。
- * 第1問〜第10問がそれぞれ question、予想のスライドが prediction になっていることを確かめる
+ * 第1問〜第10問がそれぞれ question、予想のスライドが prediction、予想結果のスライドが predResult になっていることを確かめる
  * （同じ番号が2枚あるときは、最初の1枚だけが受付のスライドになる）。
  * 最後に画像を1枚だけ作って、Slides API が使えることを確かめる。
  */

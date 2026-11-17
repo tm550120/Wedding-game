@@ -41,6 +41,21 @@
     </div>
   </div>
 
+  <!-- 「予想結果」のスライド: 司会者にだけ見せる小さな案内（数を入れる前だけ出る） -->
+  <p class="pred-prompt hidden" id="pred-prompt">一致数を入力（0〜5キー）</p>
+
+  <!-- 「予想結果」のスライド: 予想が的中した人の名前（スライドの上に重ねる） -->
+  <div class="pred-names hidden" id="pred-names">
+    <p class="pred-names-kicker" id="pred-names-kicker"></p>
+    <p class="pred-names-title">
+      <span class="pred-names-label">予想的中</span>
+      <span class="pred-names-num" id="pred-names-count">0</span>
+      <span class="pred-names-unit">人</span>
+    </p>
+    <ul class="pred-names-grid" id="pred-names-grid"></ul>
+    <p class="pred-names-message hidden" id="pred-names-message"></p>
+  </div>
+
   <!-- Apps Script の URL が未設定のときの案内 -->
   <section class="card host-setup hidden" id="setup">
     <h2>Apps Script の URL が未設定です</h2>
@@ -53,7 +68,7 @@
   <footer class="host-foot">
     <p class="host-hint"><span id="slide-pos"></span><span id="hint"></span></p>
     <div class="host-status">
-      <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字・正解）</span>
+      <span class="badge badge-demo hidden" id="badge-demo">デモ表示（ダミーの数字・正解・名前）</span>
       <span class="badge badge-error hidden" id="badge-error" role="status"></span>
       <span class="host-updated" id="updated"></span>
     </div>
