@@ -850,7 +850,7 @@ function applyStats({ stats, epoch }) {
 }
 
 /*
- * 応答を待たずに HOST.pollMs ごとに次の取得を始める（同時に HOST.maxInFlight 件まで）。
+ * HOST.pollMs ごとに次の取得を始める（同時に HOST.maxInFlight 件まで。いまは 1 件なので、前の応答が返るまで次を始めない）。
  * 順番が入れ替わって届いた古い応答は捨てる。進め方は js/poller.js。
  */
 const poller = backend
