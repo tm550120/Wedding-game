@@ -36,7 +36,7 @@
 const QUIZ_SPREADSHEET_ID = "";
 
 // クイズの回答が入るタブ（シート）の名前。画面下のタブに表示されている文字と完全に一致させる。
-const QUIZ_SHEET_NAME = "フォームの回答 1";
+const QUIZ_SHEET_NAME = "クイズ回答";
 
 // 予想用フォームの回答が入るスプレッドシートの ID。
 // クイズと同じスプレッドシート（タブ違い）なら空文字 "" のままでよい。
@@ -44,7 +44,7 @@ const QUIZ_SHEET_NAME = "フォームの回答 1";
 const PRED_SPREADSHEET_ID = "";
 
 // 予想の回答が入るタブ（シート）の名前。
-const PRED_SHEET_NAME = "フォームの回答 2";
+const PRED_SHEET_NAME = "予想回答";
 
 // 【将来用・現在は未使用】正解を書いておくタブの名前（A列: 問題番号 1〜10、B列: 正解 A/B/C/D）。
 // 正解発表の機能を足すときにここから読む。いまはこのタブを読まないし、JSON にも含めない。
