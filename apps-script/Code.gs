@@ -268,39 +268,6 @@ function aggregatePred_(rows, windows) {
   return countValues_(latest, PRED_CHOICES);
 }
 
-/**
- * 正解数のランキング（受付時間内の回答だけで数える）。[{ name, correct, answered }] を正解数の多い順に返す。
- * 名前を含むので、ウェブアプリからは返さない。エディタの logRanking からだけ使う。
- */
-function rankQuiz_(rows, windows, answers) {
-  const latest = collectQuiz_(rows, windows);
-  const byWho = {};
-  for (const no in latest) {
-    for (const who in latest[no]) {
-      const name = who.replace(/^name:/, "").replace(/^row:(\d+)$/, "（名前なし・$1行目）");
-      const entry = (byWho[who] = byWho[who] || { name: name, correct: 0, answered: 0 });
-      entry.answered += 1;
-      if (latest[no][who].value === answers[no]) entry.correct += 1;
-    }
-  }
-  return Object.keys(byWho)
-    .map(function (who) {
-      return byWho[who];
-    })
-    .sort(function (a, b) {
-      return b.correct - a.correct || a.name.localeCompare(b.name);
-    });
-}
-
-/** エディタから手動実行する。正解数のランキングを実行ログに出す（景品の順位決め用。このログはエディタでしか見えない）。 */
-function logRanking() {
-  const ranking = rankQuiz_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME), readGate_().windows, readAnswerKey_());
-  ranking.forEach(function (entry, i) {
-    Logger.log(i + 1 + ". " + entry.name + "  正解 " + entry.correct + " / 回答 " + entry.answered);
-  });
-  if (ranking.length === 0) Logger.log("受付時間内の回答がありません");
-}
-
 /* ===================== 小さな部品 ===================== */
 
 function emptyCounts_(choices) {

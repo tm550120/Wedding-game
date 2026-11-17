@@ -337,29 +337,6 @@ test("failed: 「正解」タブが無ければ answers_error", () => {
   assert.equal(load().get({ action: "answers", key: HOST_KEY }).error, "answers_error");
 });
 
-test("success: ランキングは受付時間内の回答だけで数える（エディタ専用）", () => {
-  const rows = [
-    QUIZ_HEADER,
-    quizRow(5, "山田", 1, "B"),
-    quizRow(6, "佐藤", 1, "A"),
-    quizRow(30, "佐藤", 1, "B"), // 締め切り後に直した → 数えない
-    quizRow(45, "山田", 2, "D"),
-    quizRow(46, "佐藤", 2, "D"),
-    quizRow(47, "", 2, "D"),
-  ];
-  const env = load({ sheets: { [QUIZ_SHEET]: rows, 正解: ANSWER_SHEET } });
-  env.setOpen("q1", 0);
-  env.setOpen("none", 10);
-  env.setOpen("q2", 40);
-  env.setOpen("none", 50);
-  const ranking = env.rankQuiz_(rows, env.readGate_().windows, env.readAnswerKey_());
-  assert.deepEqual(
-    Array.from(ranking, (r) => [r.name, r.correct, r.answered]),
-    [["山田", 2, 2], ["（名前なし・6行目）", 1, 1], ["佐藤", 1, 2]]
-  );
-  env.logRanking();
-});
-
 /* ===== スライドの種類の判定 ===== */
 
 const classifyCases = {
