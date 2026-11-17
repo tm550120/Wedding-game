@@ -58,8 +58,6 @@ input[type="text"]{
   outline:none;
 }
 .note{ font-size:13px; line-height:1.7; color:#d9d2ba; text-align:center; margin-top:18px; }
-.fallback{ margin-top:26px; text-align:center; font-size:13px; line-height:2; }
-.fallback a{ color:var(--gold-light); }
 .done-mark{ font-size:52px; text-align:center; color:var(--gold); margin:10px 0 4px; }
 .hidden{ display:none !important; }
 .who{ text-align:center; font-size:14px; color:var(--gold-light); margin-bottom:16px; }

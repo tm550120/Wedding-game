@@ -15,12 +15,11 @@
  * 受付状態を読めなくなったとき:
  *   - GATE.staleMs までは、最後に読めた状態のまま動かす（一瞬の電波切れで回答を止めない）
  *   - それを過ぎたら connecting にして回答ボタンを隠す（締め切られたことに気づかず答えてしまわないように）
- *   - ページ下のフォームへのリンクは常に出しておく
  * 締め切りを最終的に守るのは Apps Script 側（受付時間外に届いた回答は人数に数えない）。
  *
  * ?demo=1 を付けると、同じブラウザで開いた host.html?demo=1 の受付状態で動く（回答は送信しない）。
  */
-import { SECTIONS, SUBMIT, GATE, HOST } from "./config.js";
+import { SUBMIT, GATE, HOST } from "./config.js";
 import { submitAnswer } from "./submit.js";
 import { loadName, saveName, loadSent, saveSent, updateAllSent } from "./storage.js";
 import { fetchGate, guestMode, parseTarget, pruneSent, readDemoGate } from "./gate.js";
@@ -163,7 +162,7 @@ function render() {
     }
   } else {
     prompt = ["接続しています…"];
-    note = ["そのままお待ちください"];
+    note = ["しばらく待っても変わらない場合は、", "ページを開き直してください"];
   }
 
   $("screen-live").dataset.mode = mode;
@@ -277,19 +276,6 @@ async function poll() {
 
 /* ===== 起動 ===== */
 
-function initFallbackLinks() {
-  const box = $("fallback-links");
-  SECTIONS.forEach((section, i) => {
-    if (i > 0) box.appendChild(document.createTextNode("／"));
-    const a = document.createElement("a");
-    a.href = section.fallback.url;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = section.fallback.label;
-    box.appendChild(a);
-  });
-}
-
 function start() {
   if (!DEMO) saveName(state.name);
   state.sent = DEMO ? {} : loadSent(state.name); // 送信済み（ロック）は名前ごとに覚えている
@@ -297,7 +283,6 @@ function start() {
   $("live-who").textContent = state.name + " さん";
   $("screen-name").classList.add("hidden");
   $("screen-live").classList.remove("hidden");
-  $("fallback").classList.remove("hidden");
   window.scrollTo(0, 0);
   render();
   poll();
@@ -312,7 +297,6 @@ $("guest-name").addEventListener("input", (e) => {
 });
 $("btn-start").addEventListener("click", start);
 $("btn-submit").addEventListener("click", handleSubmit);
-initFallbackLinks();
 if (DEMO) $("badge-demo").classList.remove("hidden");
 if (AUTO_CLOSE_SEC) setInterval(renderCountdown, 500);
 

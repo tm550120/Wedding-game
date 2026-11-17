@@ -26,8 +26,8 @@ export const SECTIONS = [
     choiceColumns: 2,
     progressLabel: (index, total) => `第${index + 1}問 / ${total}`,
     answerLabel: (index) => `第${index + 1}問`, // 「第3問は送信済みです」の表示に使う
-    // ページがうまく動かない人向けの、フォームへの直接リンク
-    fallback: { label: "クイズのフォーム", url: "https://forms.gle/XmHLsmcajpB2wd218" },
+    // 送信に失敗したときに案内する、フォームへの直接リンク
+    fallback: { url: "https://forms.gle/XmHLsmcajpB2wd218" },
     /* クイズ用フォーム（名前＋第1問〜第10問、11ページ）。第1問〜第10問は「必須」オフが前提 */
     form: {
       action: "https://docs.google.com/forms/d/e/1FAIpQLSdAFFk24pUGKVtx4RHVpMdSXgKofk_-XKUq784UOIC9LTO0qw/formResponse",
@@ -76,7 +76,7 @@ export const SECTIONS = [
     choiceColumns: 2, // 2×3 に並べる（お題の一覧を出している間は、css/style.css が 3×2 に詰めて1画面に収める）
     progressLabel: () => "以心伝心ゲーム",
     answerLabel: () => "予想",
-    fallback: { label: "予想のフォーム", url: "https://forms.gle/P3A1VpHLHZuu6wNn8" },
+    fallback: { url: "https://forms.gle/P3A1VpHLHZuu6wNn8" },
     /* 予想用フォーム（名前＋予想、1ページ） */
     form: {
       action: "https://docs.google.com/forms/d/e/1FAIpQLScLpoVfv_zUhA5plt0ZJd3qyD9OMbwLQUvja0Wi_afbKZeExg/formResponse",
