@@ -57,3 +57,18 @@ export function saveSent(name, sent) {
   const others = Object.entries(readSentMap()).filter(([key]) => key !== name);
   write(SENT_KEY, JSON.stringify(Object.fromEntries([...others, [name, sent]])));
 }
+
+/**
+ * 保存してある全員分の送信済みに update をかけ、変わった人がいれば保存し直す。
+ * 受付状態はどの名前でも同じなので、いま使っている名前だけでなく全員分をまとめて直す
+ * （リハーサルで使った別の名前に、あとで入り直したときにも古いロックが残らないように）。
+ */
+export function updateAllSent(update) {
+  let changed = false;
+  const entries = Object.entries(readSentMap()).map(([name, sent]) => {
+    const next = update(sent);
+    if (next !== sent) changed = true;
+    return [name, next];
+  });
+  if (changed) write(SENT_KEY, JSON.stringify(Object.fromEntries(entries)));
+}

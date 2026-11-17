@@ -35,6 +35,33 @@ export function targetLabel(target) {
   return parsed ? parsed.section.answerLabel(parsed.index) : "";
 }
 
+/**
+ * 送信済みロック（{ セクションid: { 問題番号(0始まり): 回答 } }）から、受付状態に合わないものを外して返す。
+ * ロックが正しいのは、その対象がいま受付中か、締め切り済み（done）のときだけ。
+ * リハーサルのあとに受付の記録を消す（resetGame）と done が空に戻るので、端末に残ったリハーサルの
+ * ロックがここで外れ、本番で同じ問題に答えられるようになる。
+ * 外すものが無ければ、渡された sent をそのまま返す（呼び出し側が「変わったか」を === で見分けられる）。
+ * gate には、サーバーから実際に読めた状態だけを渡すこと（読めなかったときの仮の状態を渡すとロックが消える）。
+ */
+export function pruneSent(sent, gate) {
+  if (!sent || typeof sent !== "object") return sent;
+  const live = new Set([gate.open, gate.lastClosed, ...gate.done]);
+  const targetOf = (sectionId, index) => (sectionId === "quiz" ? "q" + (Number(index) + 1) : sectionId);
+  let changed = false;
+  const kept = {};
+  for (const [sectionId, answers] of Object.entries(sent)) {
+    // 知らないセクションや壊れた値には触らない（どのみち表示には使われない）
+    if (!SECTIONS.some((s) => s.id === sectionId) || !answers || typeof answers !== "object") {
+      kept[sectionId] = answers;
+      continue;
+    }
+    const entries = Object.entries(answers).filter(([index]) => live.has(targetOf(sectionId, index)));
+    if (entries.length !== Object.keys(answers).length) changed = true;
+    if (entries.length > 0) kept[sectionId] = Object.fromEntries(entries);
+  }
+  return changed ? kept : sent;
+}
+
 /** Apps Script から届いた受付状態を確かめる。想定の形でなければ（古い Code.gs など）例外にする。 */
 export function normalizeGate(raw) {
   if (!raw || typeof raw !== "object" || !("open" in raw)) throw new Error("unexpected state");

@@ -21,8 +21,8 @@
  */
 import { SECTIONS, SUBMIT, GATE, HOST } from "./config.js";
 import { submitAnswer } from "./submit.js";
-import { loadName, saveName, loadSent, saveSent } from "./storage.js";
-import { fetchGate, parseTarget, readDemoGate } from "./gate.js";
+import { loadName, saveName, loadSent, saveSent, updateAllSent } from "./storage.js";
+import { fetchGate, parseTarget, pruneSent, readDemoGate } from "./gate.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -176,6 +176,21 @@ async function handleSubmit() {
 
 /* ===== 受付状態の定期取得 ===== */
 
+/**
+ * いま読めた受付状態に合わない「送信済み」を外す。
+ * リハーサルのあとに受付の記録を消しても（resetGame）、端末にはリハーサルのロックが残っていて、
+ * 本番で同じ問題が「送信済み」になり答えられなかった。受付中でも締め切り済みでもない問題のロックは
+ * 古いものなので、ここで外す（保存してある全員分。理由は storage.js の updateAllSent を参照）。
+ * rev が 0 の状態では直さない: Apps Script は受付状態を読めなかったときに「空・rev 0」を返すので、
+ * それを信じると本番中のロックが消えてしまう（記録を消しても rev は 0 に戻らない）。
+ * デモの受付状態はこのブラウザの中にあり、司会画面のデモを開き直すと rev 0 から始まるので、そのまま合わせる。
+ */
+function reconcileSent(gate) {
+  if (!DEMO && !(gate.rev > 0)) return;
+  state.sent = pruneSent(state.sent, gate);
+  if (!DEMO) updateAllSent((sent) => pruneSent(sent, gate));
+}
+
 let pollTimer = null;
 let pollBusy = false;
 
@@ -188,6 +203,7 @@ async function poll() {
     state.gate = await loadGate();
     state.gateAt = Date.now();
     state.failures = 0;
+    reconcileSent(state.gate); // 読めたときだけ。失敗したときに残してある古い状態では直さない
   } catch (e) {
     state.failures += 1; // つながらない・Apps Script が古い など。間隔をあけて読み直す
   } finally {
