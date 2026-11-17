@@ -25,6 +25,7 @@ import { HOST } from "./config.js";
 import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, sendSetOpen, isFatal } from "./host-api.js";
 import { createDemoBackend } from "./host-demo.js";
 import { panelSlides } from "./host-panel.js";
+import { createPoller } from "./poller.js";
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate } from "./gate.js";
 
 const $ = (id) => document.getElementById(id);
@@ -452,41 +453,43 @@ function formatTime(value) {
   return [date.getHours(), date.getMinutes(), date.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
-let pollTimer = null;
-let pollBusy = false;
-
-async function poll() {
-  clearTimeout(pollTimer);
-  pollTimer = null;
-  if (pollBusy || !backend) return;
-  pollBusy = true;
-  const epoch = gateEpoch;
-  try {
-    const stats = await backend.loadStats();
-    state.stats = stats;
-    $("updated").textContent = "最終更新 " + formatTime(stats.updatedAt);
-    // Code.gs 側の設定ミス（タブ名の間違いなど）は errors で届く。名前は含まれない
-    setError("stats", Array.isArray(stats.errors) && stats.errors.length > 0 ? "設定エラー: " + stats.errors.join(" / ") : "");
-    setError("gateApi", stats.state ? "" : "Apps Script が古いままです（受付の切り替えには Code.gs の更新と再デプロイが必要）");
-    // 取得している間に受付を切り替えていたら、この受付状態は古いので使わない
-    if (stats.state && epoch === gateEpoch && !writing) {
-      state.gate = stats.state;
-      state.gateKnown = true;
-    }
-    render();
-  } catch (e) {
-    // 失敗しても前回の数字は表示したままにして、次の回でまた試す
-    setError("stats", "通信エラー（再試行中）");
-  } finally {
-    pollBusy = false;
+/** 取得できた人数と受付状態を画面に反映する。epoch は、その取得を始めたときの gateEpoch。 */
+function applyStats({ stats, epoch }) {
+  state.stats = stats;
+  $("updated").textContent = "最終更新 " + formatTime(stats.updatedAt);
+  // Code.gs 側の設定ミス（タブ名の間違いなど）は errors で届く。名前は含まれない
+  setError("stats", Array.isArray(stats.errors) && stats.errors.length > 0 ? "設定エラー: " + stats.errors.join(" / ") : "");
+  setError("gateApi", stats.state ? "" : "Apps Script が古いままです（受付の切り替えには Code.gs の更新と再デプロイが必要）");
+  // 取得している間に受付を切り替えていたら、この受付状態は古いので使わない
+  if (stats.state && epoch === gateEpoch && !writing) {
+    state.gate = stats.state;
+    state.gateKnown = true;
   }
-  // 前の取得が終わってから次を予約する（応答が遅いときに取得が重ならないように）
-  pollTimer = setTimeout(poll, HOST.pollMs);
+  render();
 }
+
+/*
+ * 応答を待たずに HOST.pollMs ごとに次の取得を始める（同時に HOST.maxInFlight 件まで）。
+ * 順番が入れ替わって届いた古い応答は捨てる。進め方は js/poller.js。
+ */
+const poller = backend
+  ? createPoller({
+      load: async () => {
+        const epoch = gateEpoch;
+        return { stats: await backend.loadStats(), epoch };
+      },
+      onSuccess: applyStats,
+      // 失敗しても前回の数字は表示したままにして、次の回でまた試す（失敗が続くほど間隔をあける）
+      onFailure: () => setError("stats", "通信エラー（再試行中）"),
+      intervalMs: HOST.pollMs,
+      maxInFlight: HOST.maxInFlight,
+      maxBackoffMs: HOST.maxBackoffMs,
+    })
+  : null;
 
 /** 定期更新が止まっていれば動かす。now が true なら、次の予定を待たずにすぐ取りに行く。 */
 function kickPoll(now) {
-  if (!pollBusy && (now || !pollTimer)) poll();
+  poller?.kick(now);
 }
 
 /* ===== キーボード・クリック ===== */

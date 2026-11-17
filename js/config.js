@@ -85,9 +85,10 @@ export const SUBMIT = {
  * 読む先は HOST.statsUrl（…/exec?action=state）。
  */
 export const GATE = {
-  // 何ミリ秒ごとに読むか。全員が同時に読まないよう、毎回 0〜jitterMs をランダムに足す（2〜3秒ごと）
-  pollMs: 2000,
-  jitterMs: 1000,
+  // 何ミリ秒ごとに読むか。全員が同時に読まないよう、毎回 0〜jitterMs をランダムに足す。
+  // 前の応答が返ってからこの時間を待つので、実際の間隔は「応答にかかる時間（1〜2秒）＋ 1〜1.5秒」
+  pollMs: 1000,
+  jitterMs: 500,
   // この時間（ミリ秒）応答がなければ、その回は失敗として扱う
   timeoutMs: 8000,
   // 失敗が続くほど間隔をあける。その上限（ミリ秒）
@@ -105,8 +106,12 @@ export const HOST = {
   // 空のままだと司会画面は「未設定」の案内を表示し、回答ページは問題を出せない。
   // 設定手順は README.md の「司会画面」を参照。
   statsUrl: "https://script.google.com/macros/s/AKfycbzBHCykKSa5ZCUgvMJnNfgk9oq0z_R99E7ZRp8ki_jjGs2-094TuIGJO5Covbeiz8I5/exec",
-  // 司会画面が、何ミリ秒ごとに人数と受付状態を取りに行くか
-  pollMs: 3000,
+  // 司会画面が、何ミリ秒ごとに人数と受付状態を取りに行くか。応答（2〜3秒かかる）を待たずに次を始める
+  pollMs: 500,
+  // 同時に進める取得の上限。応答が遅い・返らないときも、これ以上は重ねない
+  maxInFlight: 2,
+  // 取得の失敗が続くほど間隔をあける。その上限（ミリ秒）
+  maxBackoffMs: 8000,
   // この時間（ミリ秒）応答がなければ、その回は失敗として扱う（前回の表示は残す）
   timeoutMs: 8000,
   // "fetch" : 通常はこちら。
