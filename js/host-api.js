@@ -5,7 +5,8 @@
  *   スライド一覧   …/exec?action=slides&key=司会キー              司会キーが合うときだけ返る
  *   正解           …/exec?action=answers&key=司会キー             〃
  *   受付の切り替え …/exec?action=setOpen&key=司会キー&target=q5   〃
- *   予想の的中者   …/exec?action=predHits&key=司会キー&n=3        〃（名前が返るのはこれだけ）
+ *   予想の的中者   …/exec?action=predHits&key=司会キー&n=3        〃（名前が返るのは、これと下の ranking だけ）
+ *   クイズの順位   …/exec?action=ranking&key=司会キー&limit=5     〃
  *
  * 司会キーは URL（host.html?key=…）で一度だけ受け取り、この端末の localStorage に保存する。
  * リポジトリや config.js には書かない（正解とスライドを読めて、受付を切り替えられるキーなので）。
@@ -14,6 +15,7 @@
 import { loadJson } from "./net.js";
 import { normalizeGate } from "./gate.js";
 import { normalizePredHits } from "./pred-result.js";
+import { normalizeRanking } from "./ranking.js";
 
 const KEY_STORAGE = "wg-host-key";
 
@@ -100,6 +102,15 @@ export async function fetchAnswers(url, key, options) {
 export async function fetchPredHits(url, key, n, options) {
   const data = await callWithKey(url, key, { action: "predHits", n: String(n) }, options, (d) => normalizePredHits(d, n) !== null);
   return normalizePredHits(data, n);
+}
+
+/**
+ * クイズの成績の順位（正解数の多い順。上位 limit 人ぶん）を取得する。返すのは js/ranking.js の normalizeRanking の形。
+ * Code.gs が古いときは人数の JSON が返るので、code: "unsupported" の例外になる。
+ */
+export async function fetchRanking(url, key, limit, options) {
+  const data = await callWithKey(url, key, { action: "ranking", limit: String(limit) }, options, (d) => normalizeRanking(d) !== null);
+  return normalizeRanking(data);
 }
 
 /** 受付を切り替えて、切り替えたあとの受付状態を返す。target: "q1"〜"q10" / "pred" / "none" / "idle" */

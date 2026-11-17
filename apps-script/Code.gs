@@ -15,7 +15,12 @@
  *     …/exec?action=answers                          → 正解の一覧。{ "answers": { "1": "B", … }, "missing": [3] }
  *     …/exec?action=slides                           → スライド一覧（下の「スライド一覧」を参照）
  *     …/exec?action=predHits&n=3                     → 予想が的中した人の名前。{ "n": 3, "count": 2, "names": ["…", "…"] }
- *                                                      （n は実際にそろった数 0〜5。名前を返すのはこの呼び出しだけ）
+ *                                                      （n は実際にそろった数 0〜5）
+ *     …/exec?action=ranking&limit=5                  → クイズの成績上位（正解数の多い順）。同点は同じ順位
+ *                                                      { "total": 20, "limit": 5, "answered": [1, …, 10],
+ *                                                        "groups": [{ "place": 1, "score": 9, "names": ["…"] }, …],
+ *                                                        "cutoff": { "place": 4, "slots": 2, "names": ["…", "…", "…"] } | null }
+ *                                                      （名前を返すのは predHits と ranking だけ）
  *     …/exec?action=reset                            → 受付の記録をすべて消す（リハーサルのあと）
  *
  *   どれも ?callback=関数名 を付けると JSONP で返す（fetch が使えない環境向けの予備）。
@@ -114,6 +119,7 @@ function doGet(e) {
   if (params.action === "reset") return respond_(JSON.stringify(handleReset_(params)), params.callback);
   if (params.action === "slides") return respond_(JSON.stringify(buildSlidesResponse_(params)), params.callback);
   if (params.action === "predHits") return respond_(JSON.stringify(buildPredHitsResponse_(params)), params.callback);
+  if (params.action === "ranking") return respond_(JSON.stringify(buildRankingResponse_(params)), params.callback);
   return respond_(getStatsJson_(), params.callback);
 }
 
@@ -202,9 +208,10 @@ function readRows_(spreadsheetId, sheetName) {
 }
 
 /**
- * クイズの有効な回答を集める。rows[0] が見出し。返すのは 問題番号 → { 回答者キー: {value, ts} }。
+ * クイズの有効な回答を集める。rows[0] が見出し。返すのは 問題番号 → { 回答者キー: {value, ts, name} }。
  * 1行は「1人 × 1問」（その問題の列だけが埋まっている）。その問題の受付時間内の行だけを対象にし、
  * 同じ名前 × 同じ問題は最新の行だけを残す（締め切り後の送り直しで、受付中の回答が上書きされることはない）。
+ * name はその行に書かれた名前（前後の空白を除く）。人数の集計（aggregateQuiz_）と、成績の順位（quizRanking_）の両方がこれを使う。
  */
 function collectQuiz_(rows, windows) {
   const header = (rows[0] || []).map(normalize_);
@@ -231,7 +238,7 @@ function collectQuiz_(rows, windows) {
       const value = normalize_(row[questionCols[no]]).toUpperCase();
       if (QUIZ_CHOICES.indexOf(value) < 0) continue; // 空欄や想定外の値は数えない
       if (!inWindows_(ts, (windows || {})["q" + no])) continue; // 受付時間外
-      keepLatest_((latest[no] = latest[no] || {}), who, value, ts);
+      keepLatest_((latest[no] = latest[no] || {}), who, value, ts, displayName_(row[nameCol]));
     }
   }
   return latest;
@@ -295,6 +302,11 @@ function predHitNames_(rows, windows, label) {
     count += 1;
     if (latest[who].name) names.push(latest[who].name);
   }
+  return { count: count, names: sortNames_(names) };
+}
+
+/** 名前を日本語の並び順に並べる（その配列自体を並べ替えて返す）。並べ替えられなければ、渡された順のまま。 */
+function sortNames_(names) {
   try {
     names.sort(function (a, b) {
       return a.localeCompare(b, "ja");
@@ -302,7 +314,61 @@ function predHitNames_(rows, windows, label) {
   } catch (err) {
     /* 並べ替えられなければ、シートに現れた順のまま */
   }
-  return { count: count, names: names };
+  return names;
+}
+
+/**
+ * クイズの成績の順位。集計と同じ決まり（受付時間内・同じ名前 × 同じ問題は最新の行だけ）で選んだ回答を、
+ * answers（問題番号 → 正解。正解が書かれた問題だけ）と比べて、正解数の多い順に並べる。
+ *
+ *   - 対象は、受付時間内に1問でも答えた人（0問正解の人も含む）。名前が空の行は、誰か分からないので含めない
+ *   - 同じ正解数の人は同じ順位。順位 = 1 + 自分より正解数が多い人の数（1位, 2位, 2位, 4位, …）
+ *   - 上から順に、人数の合計が limit（景品の数）に届くまでの組を返す
+ *   - limit をまたぐ組（同点で、全員は入れない組）は cutoff にも入れる。slots はその組に残っている枠の数
+ *     例: 正解数 [9, 8, 8, 7, 7, 7, 5]・limit 5 → 1位(1人) 2位(2人) 4位(3人)。cutoff は 4位の3人で、slots は 2
+ *   - 名前は、その人のいちばん新しい回答の行に書かれたもの。組の中は日本語の並び順
+ *
+ * 返すのは { total, groups: [{ place, score, names }], cutoff: { place, slots, names } | null }。total は対象の人数。
+ */
+function quizRanking_(rows, windows, answers, limit) {
+  const latest = collectQuiz_(rows, windows);
+  const people = {};
+  for (const no in latest) {
+    const correct = answers[no];
+    for (const who in latest[no]) {
+      const entry = latest[no][who];
+      if (!entry.name) continue;
+      const person = (people[who] = people[who] || { name: entry.name, ts: entry.ts, score: 0 });
+      if (entry.ts > person.ts) {
+        person.name = entry.name;
+        person.ts = entry.ts;
+      }
+      if (correct && entry.value === correct) person.score += 1;
+    }
+  }
+
+  const byScore = {};
+  let total = 0;
+  for (const who in people) {
+    total += 1;
+    (byScore[people[who].score] = byScore[people[who].score] || []).push(people[who].name);
+  }
+  const scores = Object.keys(byScore)
+    .map(Number)
+    .sort(function (a, b) {
+      return b - a;
+    });
+
+  const groups = [];
+  let cutoff = null;
+  let above = 0; // この組より正解数が多い人の数
+  for (let i = 0; i < scores.length && above < limit; i++) {
+    const names = sortNames_(byScore[scores[i]]);
+    groups.push({ place: above + 1, score: scores[i], names: names });
+    if (above + names.length > limit) cutoff = { place: above + 1, slots: limit - above, names: names };
+    above += names.length;
+  }
+  return { total: total, groups: groups, cutoff: cutoff };
 }
 
 /* ===================== 小さな部品 ===================== */
@@ -384,7 +450,7 @@ function keepLatest_(map, who, value, ts, name) {
   const prev = map[who];
   if (prev && !isNaN(prev.ts) && !isNaN(ts) && ts < prev.ts) return;
   map[who] = { value: value, ts: ts };
-  if (name !== undefined) map[who].name = name; // 予想だけ。その人の最新の行に書かれた名前
+  if (name !== undefined) map[who].name = name; // その人の最新の行に書かれた名前
 }
 
 function countValues_(latestByWho, choices) {
@@ -659,6 +725,76 @@ function buildPredHitsResponse_(params) {
   return { updatedAt: new Date().toISOString(), n: Number(text), count: hits.count, names: hits.names };
 }
 
+/* ===================== クイズの成績の順位（?action=ranking&key=司会キー&limit=5） ===================== */
+
+// limit（景品の数）を省いたときの値と、受け付ける上限
+const RANKING_DEFAULT_LIMIT = 5;
+const RANKING_MAX_LIMIT = 30;
+
+/**
+ * 司会画面の「ランキング」のスライド用。クイズの正解数が多い順に、上位 limit 人ぶんの組を返す（決まりは quizRanking_）。
+ * 名前と正解数を返すので、司会キーが合うときだけ返す。キャッシュには置かない。
+ *   { "updatedAt": "…", "total": 20, "limit": 5, "answered": [1, 2, …, 10],
+ *     "groups": [{ "place": 1, "score": 9, "names": ["…"] }, { "place": 2, "score": 8, "names": ["…", "…"] }, …],
+ *     "cutoff": { "place": 4, "slots": 2, "names": ["…", "…", "…"] } | null }
+ *   answered は、採点に使った問題（「正解」タブに正解が書かれている問題）の番号。
+ *   失敗時は { "error": "unauthorized" | "not_configured" | "bad_request" | "answers_error" | "ranking_error", "message": "…" }
+ */
+function buildRankingResponse_(params) {
+  const denied = authorize_(params);
+  if (denied) return denied;
+  const text = params.limit === null || params.limit === undefined ? "" : String(params.limit);
+  const limit = text === "" ? RANKING_DEFAULT_LIMIT : /^[1-9]\d?$/.test(text) ? Number(text) : 0;
+  if (limit < 1 || limit > RANKING_MAX_LIMIT) {
+    return { error: "bad_request", message: "limit は 1〜" + RANKING_MAX_LIMIT + " の整数です" };
+  }
+  let answers;
+  try {
+    answers = readAnswerKey_();
+  } catch (err) {
+    return { error: "answers_error", message: "正解を読めません: " + err.message };
+  }
+  const answered = Object.keys(answers)
+    .map(Number)
+    .sort(function (a, b) {
+      return a - b;
+    });
+  if (answered.length === 0) {
+    return { error: "answers_error", message: "「" + ANSWER_SHEET_NAME + "」タブに正解が1つも書かれていません" };
+  }
+  let ranking;
+  try {
+    ranking = quizRanking_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME), readGate_().windows, answers, limit);
+  } catch (err) {
+    return { error: "ranking_error", message: "クイズの回答を読めません: " + err.message };
+  }
+  return {
+    updatedAt: new Date().toISOString(),
+    total: ranking.total,
+    limit: limit,
+    answered: answered,
+    groups: ranking.groups,
+    cutoff: ranking.cutoff,
+  };
+}
+
+/**
+ * エディタから手動実行して、成績の順位を出せることを確かめる。
+ * 実行ログに出すのは、採点に使う問題と、順位ごとの正解数・人数だけ（名前は出さない）。
+ */
+function testRanking() {
+  const answers = readAnswerKey_();
+  const ranking = quizRanking_(readRows_(QUIZ_SPREADSHEET_ID, QUIZ_SHEET_NAME), readGate_().windows, answers, RANKING_DEFAULT_LIMIT);
+  Logger.log("採点に使う問題（正解が書かれている問題）: " + (Object.keys(answers).join(", ") || "なし"));
+  Logger.log("対象の人数（受付時間内に1問でも答えた人）: " + ranking.total);
+  ranking.groups.forEach(function (group) {
+    Logger.log(group.place + "位: " + group.score + "問正解 × " + group.names.length + "人");
+  });
+  if (ranking.cutoff) {
+    Logger.log("同点のため、" + ranking.cutoff.place + "位の " + ranking.cutoff.names.length + "人で残り " + ranking.cutoff.slots + "枠を決める");
+  }
+}
+
 /* ===================== スライド一覧（?action=slides&key=司会キー） ===================== */
 
 /*
@@ -670,7 +806,8 @@ function buildPredHitsResponse_(params) {
  *       { "objectId": "p",   "kind": "slide",      "imageUrl": "https://lh7-…googleusercontent.com/…" },
  *       { "objectId": "g12", "kind": "question",   "imageUrl": "https://…", "question": 5 },
  *       { "objectId": "g34", "kind": "prediction", "imageUrl": "https://…" },
- *       { "objectId": "g56", "kind": "predResult", "imageUrl": "https://…" }
+ *       { "objectId": "g56", "kind": "predResult", "imageUrl": "https://…" },
+ *       { "objectId": "g78", "kind": "ranking",    "imageUrl": "https://…" }
  *     ],
  *     "pending": 0            // まだ画像を作れていない枚数。0 より大きければ、少し待ってもう一度呼ぶ
  *   }
@@ -680,6 +817,7 @@ function buildPredHitsResponse_(params) {
  *   question   … 第N問のスライド。司会画面は、このスライドを映している間だけ第N問の回答を受け付ける
  *   prediction … 以心伝心ゲーム予想を尋ねるスライド。映している間だけ予想を受け付ける
  *   predResult … 予想の結果を発表するスライド。司会画面が、そろった数と的中した人の名前を重ねて映す（受付は開けない）
+ *   ranking    … クイズの成績を発表するスライド。司会画面が、正解数の多い順に名前を重ねて映す（受付は開けない）
  *   slide      … それ以外。スライドの画像をそのまま映す
  *   詳しい条件は classifySlideTexts_ を参照。
  *
@@ -762,7 +900,7 @@ function getSlideList_(deckId, skipCache) {
 
 function readSlideList_(deckId) {
   const list = [];
-  const seen = {}; // 同じ問題番号・予想・予想結果のスライドが2枚あったら、最初の1枚だけをその種類にする
+  const seen = {}; // 同じ問題番号・予想・予想結果・ランキングのスライドが2枚あったら、最初の1枚だけをその種類にする
   SlidesApp.openById(deckId).getSlides().forEach(function (slide) {
     if (isSkipped_(slide)) return;
     const found = classifySlideTexts_(collectSlideTexts_(slide));
@@ -838,6 +976,10 @@ const PRED_TITLE_RE = /^(?:以心伝心(?:ゲーム)?の?)?予想(?:タイム|�
 // 「予想結果」「予想の結果」「予想結果発表」「予想的中」「予想的中者発表」「以心伝心ゲーム予想結果」など。
 // 予想のスライドの題名（PRED_TITLE_RE）とは重ならない（「結果」か「的中」が必ず付く）
 const PRED_RESULT_TITLE_RE = /^(?:以心伝心(?:ゲーム)?の?)?予想の?(?:結果|的中)者?(?:発表)?[!.:。]*$/;
+// クイズの成績を発表するスライドの題名。1つのテキストボックスが、これだけでできている。
+// 「ランキング」「クイズランキング」「ランキング発表」「成績発表」「クイズ成績発表」など。
+// ほかの題名とは重ならない（「予想」も問題番号も入らない。「結果発表」だけでは当てはまらない）
+const RANKING_TITLE_RE = /^(?:クイズの?)?(?:ランキング(?:発表)?|成績発表)[!.:。]*$/;
 // 予想の質問文そのもの。スライドのどこかにあればよい。「…5問中何問そろいますか？」「何問揃う？」
 const PRED_QUESTION_RE = /何問(?:そろ|揃)/;
 // 以前の「第N問 回答数」スライドの題名（いまは使わないので、スライドショーから外す）
@@ -853,10 +995,12 @@ const LEGACY_COUNTS_RE = /(?:第\d{1,2}問目?|Q\.?\d{1,2})[-‐–—―:・|\/
  * 2. predResult: 「予想結果」（または「予想の結果」「予想結果発表」「予想的中」など）だけが書かれたテキストボックスがある。
  *    予想より先に調べる（結果のスライドに「何問そろったでしょう？」と書いてあっても、予想の受付は開けない）。
  *    「結果を予想してみましょう」のような文や、「予想結果は最後に発表します」のように続きがある箱は当てはまらない。
- * 3. prediction: 「予想タイム」（または「予想」「以心伝心ゲーム予想」）だけが書かれたテキストボックスがある、
+ * 3. ranking: 「ランキング」（または「クイズランキング」「成績発表」など）だけが書かれたテキストボックスがある。
+ *    「ランキングは最後に発表します」のように続きがある箱や、「結果発表」だけの箱は当てはまらない。
+ * 4. prediction: 「予想タイム」（または「予想」「以心伝心ゲーム予想」）だけが書かれたテキストボックスがある、
  *    またはスライドのどこかに「何問そろ」（何問揃）がある。例: 「新郎新婦の答えは5問中何問そろいますか？」
- * 4. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
- * 5. それ以外は slide。
+ * 5. legacy: 以前の「第N問 回答数」「予想 回答数」のスライド。スライドショーから外す。
+ * 6. それ以外は slide。
  */
 function classifySlideTexts_(texts) {
   const boxes = (texts || []).map(normalizeMarker_).filter(String);
@@ -876,6 +1020,11 @@ function classifySlideTexts_(texts) {
     return PRED_RESULT_TITLE_RE.test(box);
   };
   if (boxes.some(isPredResultTitle)) return { kind: "predResult" };
+
+  const isRankingTitle = function (box) {
+    return RANKING_TITLE_RE.test(box);
+  };
+  if (boxes.some(isRankingTitle)) return { kind: "ranking" };
 
   const isPredTitle = function (box) {
     return PRED_TITLE_RE.test(box);
@@ -981,7 +1130,8 @@ function setupHostKey() {
 /**
  * 権限の承認と、スライドの種類の判定結果の確認をするための関数。
  * 実行ログに「ページ番号: 種類 | スライド上の文字の先頭」を出す（このログはエディタでしか見えない）。
- * 第1問〜第10問がそれぞれ question、予想のスライドが prediction、予想結果のスライドが predResult になっていることを確かめる
+ * 第1問〜第10問がそれぞれ question、予想のスライドが prediction、予想結果のスライドが predResult、
+ * ランキングのスライドが ranking になっていることを確かめる
  * （同じ番号が2枚あるときは、最初の1枚だけが受付のスライドになる）。
  * 最後に画像を1枚だけ作って、Slides API が使えることを確かめる。
  */

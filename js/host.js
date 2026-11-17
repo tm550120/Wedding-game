@@ -15,6 +15,10 @@
  * 「そろったのは 3問！」を映し、→ でその数を予想していた人の名前を映す（進み方は js/pred-result.js）。
  * このスライドでは受付を開けない（ゲストのスマホは「お待ちください」のまま）。
  *
+ * 「ランキング」のスライド（kind: "ranking"）では、クイズの正解数が多い順に、→ を押すたびに順位の組を1つずつ映す
+ * （下の順位から始めて、1位が最後。進み方は js/ranking.js）。このスライドでは受付状態を変えない
+ * （ゲストのスマホは、それまでの表示のまま）。数字キーでも問題へは飛ばない。
+ *
  * 残り時間を数えるのは、受付を開ける操作をしたこの画面だけ。再読み込みしたり別の端末で開いたりした画面は、
  * 受付中の問題を映していても数えない（勝手に締め切らない）。
  *
@@ -22,21 +26,22 @@
  * 受付状態は Apps Script が持つ。この画面は「→ を押した」などの操作のときだけ切り替えを頼み、
  * 開いただけ・再読み込みしただけでは何も切り替えない（別の端末で開いても本番の受付を壊さないように）。
  *
- * スライドを取得できないとき（司会キーがない / ?panel=1 / 取得に失敗）は、第1問〜第10問と予想を
+ * スライドを取得できないとき（司会キーがない / ?panel=1 / 取得に失敗）は、第1問〜第10問と予想、予想結果、ランキングを
  * 1枚ずつ並べた仮のスライドで同じように動く。司会キーがないときは受付を切り替えられず、人数を映すだけになる。
  *
  * 映すのは人数の合計だけ（選択肢ごとの人数は Apps Script からも届かない）。
- * 名前が届くのは「予想結果」のスライドで的中した人を取得するときだけ（司会キーが要る）。
+ * 名前が届くのは「予想結果」のスライドで的中した人を取得するときと、「ランキング」のスライドで順位を取得するときだけ（司会キーが要る）。
  * 正解と名前は司会キーで取得して、この画面のメモリにだけ持つ。
  */
 import { HOST } from "./config.js";
-import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, fetchPredHits, sendSetOpen, isFatal } from "./host-api.js";
+import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, fetchPredHits, fetchRanking, sendSetOpen, isFatal } from "./host-api.js";
 import { createDemoBackend } from "./host-demo.js";
 import { panelSlides } from "./host-panel.js";
 import { createPoller } from "./poller.js";
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate, revealRequest } from "./gate.js";
 import { autoCloseSeconds, countdownView } from "./countdown.js";
 import { PRED_START, matchedCountOf, predStep, stepPred, hitsNote, namesLayout, nameScale } from "./pred-result.js";
+import { RANK_START, rankLimitOf, rankShown, stepRank, rankNote, rankLayout, placeLabel, scoreLabel, cutoffLabel } from "./ranking.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -47,12 +52,14 @@ const hostKey = takeHostKey(); // URL の ?key=… はここで保存して、�
 const startHash = location.hash; // 再読み込み前の位置。"#s12" = 12枚目
 
 const AUTO_CLOSE_SEC = autoCloseSeconds(HOST, DEMO); // 0 なら自動では締め切らない
+const RANK_LIMIT = rankLimitOf(HOST.rankingLimit); // 「ランキング」のスライドで発表する人数（景品の数）
+const QUESTION_COUNT = ALL_TARGETS.filter((target) => target !== "pred").length;
 
 const net = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
 
 /*
  * Apps Script とのやり取り一式。null なら未設定。
- * loadSlides / loadAnswers / loadPredHits / setOpen は司会キーが要るので、キーがなければ null（表示のみになる）。
+ * loadSlides / loadAnswers / loadPredHits / loadRanking / setOpen は司会キーが要るので、キーがなければ null（表示のみになる）。
  */
 const backend = DEMO
   ? createDemoBackend()
@@ -63,6 +70,7 @@ const backend = DEMO
         loadSlides: hostKey ? (refresh) => fetchSlideList(HOST.statsUrl, hostKey, refresh, { ...net, timeoutMs: HOST.slidesTimeoutMs }) : null,
         loadAnswers: hostKey ? () => fetchAnswers(HOST.statsUrl, hostKey, net) : null,
         loadPredHits: hostKey ? (n) => fetchPredHits(HOST.statsUrl, hostKey, n, net) : null,
+        loadRanking: hostKey ? (limit) => fetchRanking(HOST.statsUrl, hostKey, limit, net) : null,
         setOpen: hostKey ? (target) => sendSetOpen(HOST.statsUrl, hostKey, target, net) : null,
       };
 const loadSlides = PANEL_ONLY ? null : backend?.loadSlides || null;
@@ -79,6 +87,8 @@ const state = {
   revealed: false,   // いまのスライドで正解を映しているか
   pred: PRED_START,  // 「予想結果」のスライドの段 { n: そろった数 | null, step: "input" | "count" | "names" }
   hits: null,        // 的中した人の取得状況 { n, status, count, names, message }（js/pred-result.js の namesReady を参照）
+  rank: RANK_START,  // 「ランキング」のスライドの段 { shown: 映している組の数 }
+  ranking: null,     // 順位の取得状況 { status, data, message }（js/ranking.js を参照）
   missing: "",       // スライドに目印が見つからない問題（1枚目でだけ知らせる）
   errors: {},
 };
@@ -94,6 +104,7 @@ function targetOf(slide) {
 
 const currentTarget = () => targetOf(state.slides[state.slide]);
 const isPredResult = (slide) => slide?.kind === "predResult";
+const isRanking = (slide) => slide?.kind === "ranking";
 const isQuestion = (target) => target !== "pred";
 
 /** その対象の受付の状態。"open" = 受付中 / "closed" = 締め切り済み / "ready" = まだ開けていない */
@@ -276,12 +287,80 @@ function renderPredResult(step) {
   $("pred-names-closing").classList.toggle("hidden", closing === "");
 }
 
+/** 「ランキング」のスライドの表示。shown: 映している組の数（0 ならスライドだけ）。このスライドでなければ null。 */
+function renderRanking(shown) {
+  const showing = shown !== null && shown > 0;
+  $("rank").classList.toggle("hidden", !showing);
+  if (!showing) {
+    // 隠している間に「映した」印を外しておく（次に映すとき、現れる動きを最初からやり直す）
+    [...$("rank-list").children].forEach((item) => item.classList.remove("shown", "fresh"));
+    return;
+  }
+
+  const { rows, limit } = state.ranking.data;
+  $("rank-limit").textContent = String(limit);
+
+  // 誰も答えていない
+  $("rank-message").textContent = rows.length === 0 ? "クイズの回答が まだありません…！\nランキングは発表できませんでした" : "";
+  $("rank-message").classList.toggle("hidden", rows.length > 0);
+  const list = $("rank-list");
+  list.classList.toggle("hidden", rows.length === 0);
+
+  // 組の一覧は、中身が変わったときだけ作り直す（定期更新のたびにアニメーションをやり直さない）
+  const signature = JSON.stringify(rows);
+  if (list.dataset.signature !== signature) {
+    list.dataset.signature = signature;
+    const layout = rankLayout(rows);
+    const hasCutoff = rows.some((row) => row.cutoff);
+    list.style.setProperty("--cols", String(layout.columns));
+    list.style.setProperty("--name-width", layout.width + "vh");
+    list.style.setProperty("--name-font", layout.font + "vh");
+    list.replaceChildren(
+      ...rows.map((row) => {
+        const item = el("li", row.cutoff ? "rank-row cutoff" : "rank-row");
+        item.dataset.place = String(row.place);
+        const head = el("div", "rank-head");
+        head.append(el("span", "rank-place", placeLabel(row.place)), el("span", "rank-score", scoreLabel(row.score)));
+        if (hasCutoff && !row.cutoff) head.append(el("span", "rank-tag", "入賞"));
+        const body = el("div", "rank-body");
+        if (row.cutoff) body.append(el("p", "rank-cutoff", cutoffLabel(row)));
+        const names = el("ul", "rank-names");
+        names.append(
+          ...row.names.map((name) => {
+            const chip = el("li", "", name);
+            chip.style.setProperty("--scale", String(nameScale(name, layout.fit)));
+            return chip;
+          })
+        );
+        body.append(names);
+        item.append(head, body);
+        return item;
+      })
+    );
+    // 見積もりより高くなったとき（人数がとても多いなど）は、全体を縮めて画面に収める
+    list.style.setProperty("--fit", "1");
+    if (rows.length > 0) {
+      const content = list.lastElementChild.getBoundingClientRect().bottom - list.firstElementChild.getBoundingClientRect().top;
+      const overflow = content / list.clientHeight;
+      if (overflow > 1) list.style.setProperty("--fit", String(Math.floor(100 / overflow) / 100));
+    }
+  }
+
+  // 下の順位から shown 組だけを映す。いちばん新しく映した組は、枠を明るくする
+  const firstShown = rows.length - shown;
+  [...list.children].forEach((item, i) => {
+    item.classList.toggle("shown", i >= firstShown);
+    item.classList.toggle("fresh", i === firstShown && rows.length > 1);
+  });
+}
+
 /** 画面全体を、いまの状態に合わせる。 */
 function render() {
   const current = state.slides[state.slide];
   const target = targetOf(current);
   const view = target ? viewOf(target) : null;
   const predView = isPredResult(current) ? predStep(state.pred, state.hits) : null;
+  const rankView = isRanking(current) ? rankShown(state.rank, state.ranking) : null;
 
   // スライド
   state.slides.forEach((slide) => slide.el.classList.toggle("current", slide === current));
@@ -289,9 +368,10 @@ function render() {
   $("stage-message").classList.toggle("hidden", !showMessage);
   $("stage-message").textContent = current?.failed ? "スライドの画像を読み込めません（再試行中）" : "スライドを読み込み中…";
   // 次の操作の案内は出さない。出すのは、うまくいっていないときの知らせだけ（右下）:
-  // 司会キーがなくて受付を切り替えられない / 予想結果のスライドで名前を映せない
+  // 司会キーがなくて受付を切り替えられない / 予想結果のスライドで名前を映せない / ランキングを映せない
   setError("key", target && !backend?.setOpen ? "表示のみ（司会キーがないので、受付は切り替えられません）" : "");
   setError("pred", predView ? hitsNote(state.hits, state.pred.n) : "");
+  setError("rank", rankView !== null ? rankNote(state.ranking, QUESTION_COUNT) : "");
 
   // 受付の状態と人数（問題のスライドのときだけ）
   $("gate").classList.toggle("hidden", !target);
@@ -312,6 +392,9 @@ function render() {
     $("reveal-label").textContent = "そろったのは";
     $("reveal-answer").textContent = state.pred.n + "問！";
   }
+
+  // ランキング
+  renderRanking(rankView);
 
   // 正解
   const revealing = Boolean(target) && state.revealed;
@@ -351,11 +434,22 @@ function goTo(index, how) {
   if (isPredResult(state.slides[next]) && !(how === "init" && next === state.slide)) {
     state.pred = how === "back" ? stepPred(state.pred, "return", state.hits).pred : PRED_START;
   }
+  // 「ランキング」のスライドは、来るたびに順位を取得し直して最初から。次のスライドから ← で戻ってきたときだけ、
+  // 全員を映した続きから。スライド一覧の読み直し（"init"）で同じスライドに留まるときは、発表の途中の段をそのまま保つ
+  if (isRanking(state.slides[next]) && !(how === "init" && next === state.slide && state.ranking)) {
+    if (how === "back" && state.ranking?.status === "ok") {
+      state.rank = stepRank(state.rank, "return", state.ranking).rank;
+    } else {
+      state.rank = RANK_START;
+      loadRanking();
+    }
+  }
   state.slide = next;
   state.revealed = false;
 
   const target = currentTarget();
-  if (how !== "init" && writable()) {
+  // 「ランキング」のスライドでは受付状態を変えない（ゲストのスマホは、終了の画面などそれまでの表示のまま）
+  if (how !== "init" && writable() && !isRanking(state.slides[next])) {
     const view = target && viewOf(target);
     if (view === "ready" && how === "forward") {
       requestGate(target); // 問題のスライドに進んできたら、その問題の受付を開ける
@@ -396,6 +490,14 @@ function advance() {
       return;
     }
   }
+  if (isRanking(state.slides[state.slide])) {
+    const { rank, leave } = stepRank(state.rank, "advance", state.ranking);
+    if (!leave) {
+      state.rank = rank;
+      render();
+      return;
+    }
+  }
   const target = currentTarget();
   if (target) {
     const view = viewOf(target);
@@ -425,6 +527,14 @@ function retreat() {
     const { pred, leave } = stepPred(state.pred, "retreat", state.hits);
     if (!leave) {
       state.pred = pred;
+      render();
+      return;
+    }
+  }
+  if (isRanking(state.slides[state.slide])) {
+    const { rank, leave } = stepRank(state.rank, "retreat", state.ranking);
+    if (!leave) {
+      state.rank = rank;
       render();
       return;
     }
@@ -483,6 +593,41 @@ async function loadPredHits(n) {
       }
       await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
       if (seq !== hitsSeq) return;
+    }
+  }
+  render();
+}
+
+let rankSeq = 0; // 取得のたびに増える。取得し直したあとに届いた、前の結果を捨てるために使う
+
+/** クイズの成績の順位を取得する（司会キーが要る）。通信エラーは3回まで試す。失敗しても → で次のスライドへ進める。 */
+async function loadRanking() {
+  const seq = ++rankSeq;
+  if (!backend?.loadRanking) {
+    state.ranking = { status: "nokey" };
+    return;
+  }
+  state.ranking = { status: "loading" };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const data = await backend.loadRanking(RANK_LIMIT);
+      if (seq !== rankSeq) return;
+      state.ranking = { status: "ok", data };
+      break;
+    } catch (e) {
+      if (seq !== rankSeq) return;
+      if (e.code) {
+        // 待っても直らない（Code.gs が古い・キー違い・「正解」タブやクイズのシートを読めない など）
+        const status = e.code === "unsupported" ? "unsupported" : e.code === "unauthorized" ? "nokey" : "failed";
+        state.ranking = { status, message: e.message };
+        break;
+      }
+      if (attempt === 3) {
+        state.ranking = { status: "error" };
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      if (seq !== rankSeq) return;
     }
   }
   render();
@@ -694,11 +839,19 @@ function initControls() {
     else if (key === "r" || key === "R") {
       refreshSlides("all");
       refreshAnswers();
+      // 「ランキング」のスライドでは、順位も取得し直して最初から
+      if (isRanking(state.slides[state.slide])) {
+        state.rank = RANK_START;
+        loadRanking();
+        render();
+      }
     } else if (/^[0-9]$/.test(key)) {
       // 「予想結果」のスライドでは、数字キーは「そろった数」の入力（6〜9 は何もしない）。問題へは飛ばない
       if (isPredResult(state.slides[state.slide])) {
         const n = matchedCountOf(key);
         if (n !== null) enterMatchedCount(n);
+      } else if (isRanking(state.slides[state.slide])) {
+        // 「ランキング」のスライドでは、数字キーは何もしない（発表の途中で問題へ飛ばないように）
       } else jumpToTarget("q" + (key === "0" ? 10 : key));
     } else if (key === "p" || key === "P") jumpToTarget("pred");
     else return;

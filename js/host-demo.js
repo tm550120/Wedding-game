@@ -3,12 +3,13 @@
  *   - スライドは、その場で作った仮の画像（SVG）。本物のスライドは使わない
  *   - 受付状態は、このブラウザの localStorage に置く（index.html?demo=1 が同じものを読む）
  *   - 人数は、受付中の問題だけ、ダミーの数字が少しずつ増える
- *   - 正解もダミー。「予想結果」のスライドに出る名前も架空のもの
+ *   - 正解もダミー。「予想結果」「ランキング」のスライドに出る名前も架空のもの
  * 返す形は本物（apps-script/Code.gs → js/host-api.js）と同じにしてある。
  */
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, readDemoGate, reduceGate, writeDemoGate } from "./gate.js";
-import { placeholderImage, predResultSlide, targetSlide } from "./host-panel.js";
+import { placeholderImage, predResultSlide, rankingSlide, targetSlide } from "./host-panel.js";
 import { PRED_MAX } from "./pred-result.js";
+import { RANK_MAX_LIMIT, normalizeRanking, rankGroups } from "./ranking.js";
 
 const DEMO_GUESTS = 24;
 const DEMO_ANSWERS = ["B", "D", "A", "C", "B", "A", "D", "C", "A", "B"];
@@ -35,6 +36,18 @@ function demoPredHits(n) {
   return { n, count: names.length, names };
 }
 
+/*
+ * 「ランキング」のスライドで映す、架空の成績（DEMO_NAMES の先頭から DEMO_GUESTS 人に、順に正解数を割り当てる）。
+ * 景品 5つのとき: 1位 1人 → 2位 2人 → 4位 3人（同点。残り2枠をじゃんけんで決める）になる。
+ */
+const DEMO_SCORES = [9, 8, 8, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4, 3, 3, 2, 1, 0];
+
+/** 本物の応答と同じ形を作ってから、js/host-api.js の fetchRanking と同じように画面で使う形にして返す。 */
+function demoRanking(limit) {
+  const people = DEMO_SCORES.slice(0, DEMO_GUESTS).map((score, i) => ({ name: DEMO_NAMES[i], score }));
+  return normalizeRanking({ updatedAt: new Date().toISOString(), ...rankGroups(people, limit), answered: DEMO_ANSWERS.map((_, i) => i + 1) });
+}
+
 const later = (value, ms) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
 function demoSlides() {
@@ -51,6 +64,7 @@ function demoSlides() {
     targetSlide("pred", "", placeholderImage("予想タイム", "新郎新婦の答えは 5問中 何問そろいますか？", "デモ用の仮スライド")),
     image("お題 1", "せーの！"),
     predResultSlide("", "デモ用の仮スライド"),
+    rankingSlide("", "デモ用の仮スライド"),
     image("Thank you!", "ご参加ありがとうございました"),
   ];
   return pages.map((page, i) => ({ ...page, objectId: "demo" + (i + 1) }));
@@ -77,6 +91,10 @@ export function createDemoBackend() {
     loadAnswers: () => later(Object.fromEntries(DEMO_ANSWERS.map((answer, i) => [String(i + 1), answer])), 80),
     loadPredHits: (n) =>
       Number.isInteger(n) && n >= 0 && n <= PRED_MAX ? later(demoPredHits(n), 300) : Promise.reject(Object.assign(new Error("n は 0〜5 の整数です"), { code: "bad_request" })),
+    loadRanking: (limit) =>
+      Number.isInteger(limit) && limit >= 1 && limit <= RANK_MAX_LIMIT
+        ? later(demoRanking(limit), 300)
+        : Promise.reject(Object.assign(new Error("limit は 1〜30 の整数です"), { code: "bad_request" })),
     setOpen(target) {
       gate = reduceGate(gate, target);
       writeDemoGate(gate);

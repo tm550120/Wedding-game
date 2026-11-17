@@ -33,12 +33,17 @@ export function predResultSlide(objectId, foot = "") {
   return { objectId, kind: "predResult", imageUrl: placeholderImage("予想結果", "新郎新婦の答えは 何問そろったでしょう？", foot) };
 }
 
-/** 第1問〜第10問と予想、予想結果を、1枚ずつ仮のスライドにした一覧（本物のスライド一覧と同じ形）。 */
+/** クイズの成績を発表するスライド（正解数の多い順に名前を重ねて映す）の、スライド一覧の1件。 */
+export function rankingSlide(objectId, foot = "") {
+  return { objectId, kind: "ranking", imageUrl: placeholderImage("クイズ ランキング", "成績上位のみなさまを発表します", foot) };
+}
+
+/** 第1問〜第10問と予想、予想結果、ランキングを、1枚ずつ仮のスライドにした一覧（本物のスライド一覧と同じ形）。 */
 export function panelSlides() {
   const slides = ALL_TARGETS.map((target) => {
     const { section, index } = parseTarget(target);
     const title = section.id === "quiz" ? section.answerLabel(index) : section.title;
     return targetSlide(target, "panel-" + target, placeholderImage(title, section.promptLines.join(" ")));
   });
-  return [...slides, predResultSlide("panel-predResult")];
+  return [...slides, predResultSlide("panel-predResult"), rankingSlide("panel-ranking")];
 }

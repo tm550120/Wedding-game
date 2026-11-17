@@ -1,7 +1,7 @@
 /*
  * 司会画面（host.html）専用のスタイル。色とフォントは style.css のものを使う。
  * 16:9 のプロジェクター投影を想定し、大きさは画面の高さ（vh）基準で決める。
- * スライドの画像を全面に映し、その上に「受付の状態と人数」「正解」「予想の結果」「うまくいっていないときの知らせ」を重ねる。
+ * スライドの画像を全面に映し、その上に「受付の状態と人数」「正解」「予想の結果」「クイズのランキング」「うまくいっていないときの知らせ」を重ねる。
  */
 body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block; background:#000; cursor:pointer; }
 
@@ -110,6 +110,63 @@ body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block
 }
 .pred-names-closing::before,.pred-names-closing::after{ content:"✦"; color:var(--gold); font-size:.7em; margin:0 1.2em; vertical-align:.12em; }
 @keyframes pred-name{ from{ opacity:0; transform:translateY(1.5vh); } to{ opacity:1; transform:none; } }
+
+/* ---- ランキングのスライド（スライドを暗くして、全面に重ねる） ---- */
+/* 大きさは js/ranking.js の rankLayout の見積もりと合わせてある（変えるときは両方を直す） */
+.rank{
+  position:fixed; inset:0; z-index:30; display:flex; flex-direction:column; align-items:center;
+  padding:4vh 5vw 6vh; text-align:center;
+  background:radial-gradient(120% 90% at 50% 0%, rgba(26,70,52,.985) 0%, rgba(11,36,27,.985) 60%, rgba(6,20,15,.99) 100%);
+  animation:reveal-bg .5s ease both;
+}
+.rank p{ margin:0; }
+.rank-kicker{ font-size:3.2vh; line-height:1.3; letter-spacing:.3em; text-indent:.3em; color:var(--gold-light); }
+.rank-title{ margin-top:.6vh !important; font-size:6.4vh; line-height:1.2; font-weight:700; letter-spacing:.2em; text-indent:.2em; color:var(--paper); }
+.rank-title-num{ font-size:1.3em; color:var(--gold-light); text-shadow:0 0 4vh rgba(232,207,122,.4); }
+/* 組は上が1位。まだ映していない組も場所だけは取っておき、下から順に現れる（並びが動かない） */
+.rank-list{
+  list-style:none; margin:2vh 0 0; padding:0; width:160vh; max-width:100%; flex:1; min-height:0;
+  display:flex; flex-direction:column; justify-content:center; gap:1.4vh;
+  transform:scale(var(--fit, 1)); transform-origin:50% 50%;
+}
+.rank-row{
+  display:grid; grid-template-columns:42vh 108vh; column-gap:3.2vh; align-items:center; justify-content:center;
+  padding:1.2vh 2.4vh; border-radius:2vh; text-align:left; visibility:hidden;
+  border:.25vh solid rgba(201,162,39,.75);
+  background:linear-gradient(180deg, rgba(26,70,52,.92), rgba(11,36,27,.92));
+  box-shadow:0 .6vh 2vh rgba(0,0,0,.35);
+}
+.rank-row.shown{ visibility:visible; animation:rank-row .7s cubic-bezier(.2,.9,.3,1.1) both; }
+/* いま発表した組は、枠を明るくする */
+.rank-row.fresh{ border-color:var(--gold-light); box-shadow:0 0 0 .6vh rgba(232,207,122,.2), 0 .6vh 3vh rgba(0,0,0,.5); }
+.rank-head{ display:flex; align-items:baseline; gap:1.8vh; min-height:8vh; white-space:nowrap; }
+.rank-place{ min-width:13vh; text-align:right; font-size:6.4vh; line-height:8vh; font-weight:700; color:var(--gold-light); font-variant-numeric:tabular-nums; }
+.rank-row[data-place="1"] .rank-place{ text-shadow:0 0 3vh rgba(232,207,122,.6); }
+.rank-score{ font-size:3.6vh; letter-spacing:.08em; color:var(--paper); }
+/* 「入賞」: 同点のじゃんけんがあるとき、それより上の（入賞が決まった）組に付ける */
+.rank-tag{ align-self:center; padding:.3vh 1.4vh; border-radius:2vh; font-size:2.3vh; font-weight:700; letter-spacing:.2em; text-indent:.2em; color:#fff; background:var(--gold); }
+.rank-body{ min-width:0; }
+/* 列の数（--cols）・枠の幅（--name-width）・文字の大きさ（--name-font）は js/ranking.js の rankLayout が決める */
+.rank-names{
+  list-style:none; margin:0; padding:0;
+  display:grid; grid-template-columns:repeat(var(--cols, 3), minmax(0, var(--name-width, 35vh))); gap:1vh 1.4vh;
+}
+.rank-names li{
+  display:flex; align-items:center; justify-content:center; min-width:0; overflow:hidden;
+  padding:.9vh; border-radius:1.2vh; line-height:1.3; white-space:nowrap; letter-spacing:.06em;
+  font-size:calc(var(--name-font, 4vh) * var(--scale, 1)); min-height:calc(var(--name-font, 4vh) * 1.3 + 1.8vh);
+  color:var(--paper); border:.2vh solid rgba(201,162,39,.6); background:rgba(6,20,15,.55);
+}
+/* 同点で全員は入れない組: 破線の枠にして、「同点 3名 → じゃんけんで 2名」を名前の上に出す */
+.rank-row.cutoff{ border-style:dashed; border-color:#ffc9a8; }
+.rank-row.cutoff .rank-names li{ border-style:dashed; border-color:rgba(255,201,168,.8); }
+.rank-cutoff{
+  display:inline-block; margin:0 0 1.2vh !important; padding:0 2vh; border-radius:1.2vh;
+  font-size:3vh; line-height:4.4vh; font-weight:700; letter-spacing:.1em; white-space:nowrap;
+  color:#2a1a08; background:#ffc9a8;
+}
+.rank-message{ white-space:pre-line; flex:1; display:flex; align-items:center; justify-content:center; font-size:5.4vh; line-height:1.8; letter-spacing:.12em; color:var(--paper); }
+@keyframes rank-row{ from{ opacity:0; transform:translateY(2.5vh) scale(.97); } to{ opacity:1; transform:none; } }
 
 /* ---- 司会者向けの小さな表示（下端。会場からは目立たない大きさにする） ---- */
 .host-foot{

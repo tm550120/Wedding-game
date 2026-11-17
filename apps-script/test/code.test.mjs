@@ -203,7 +203,7 @@ test("failed: 司会キーが違う・無いときは、受付の切り替え・
 test("failed: 司会キーが未設定なら not_configured（空のキーで通さない）", () => {
   for (const props of [{}, { HOST_KEY: "short" }]) {
     const env = load({ props, sheets: { 正解: ANSWER_SHEET } });
-    for (const action of ["setOpen", "answers", "reset", "slides", "predHits"]) {
+    for (const action of ["setOpen", "answers", "reset", "slides", "predHits", "ranking"]) {
       assert.equal(env.get({ action, key: props.HOST_KEY || "", target: "q1" }).error, "not_configured");
     }
     assert.equal(env.get({ action: "state" }).open, null);
@@ -478,6 +478,253 @@ test("success: 司会キーのない応答には、どの呼び出しでも名�
   assert.match(jsonp.text, /^cb1\(\{.*"names":\["やまだ"\].*\}\);$/);
 });
 
+/* ===== クイズの成績の順位（?action=ranking） ===== */
+
+/** 第1問〜第10問の正解がすべて同じ文字の「正解」タブ。 */
+const answerSheet = (value = "A", numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) => [["問題番号", "正解"], ...numbers.map((no) => [no, value])];
+/** 第 no 問の受付時間は no×100 秒 〜 (no+1)×100 秒。その中（+ offset 秒）に記録された回答の行。 */
+const answerRow = (name, no, value, offset = 10) => quizRow(no * 100 + offset, name, no, value);
+/** 正解がすべて A のとき、score 問だけ正解した人の行（第1問から score 問は A、残りは B）。 */
+const scoreRows = (name, score) => Array.from({ length: 10 }, (_, i) => answerRow(name, i + 1, i < score ? "A" : "B"));
+/** { 名前: 正解数 } から、クイズのシートの行を作る。 */
+const scoreSheet = (scores) => Object.entries(scores).flatMap(([name, score]) => scoreRows(name, score));
+
+/** 第1問〜第10問の受付を順に開けて締め切った環境。rows はクイズのシートの行（見出しを除く）。 */
+function rankEnv(rows, answers = answerSheet()) {
+  const sheets = { [QUIZ_SHEET]: [QUIZ_HEADER, ...rows], [PRED_SHEET]: [PRED_HEADER, predRow(5, "予想だけの人", "3問")] };
+  if (answers) sheets["正解"] = answers;
+  const env = load({ sheets });
+  for (let no = 1; no <= 10; no++) env.setOpen("q" + no, no * 100);
+  env.setOpen("none", 1100);
+  env.at(2000);
+  return env;
+}
+const ranking = (env, limit) => env.get({ action: "ranking", key: HOST_KEY, limit });
+/** 組を [順位, 正解数, 名前…] の配列にする。 */
+const groupsOf = (res) => res.groups.map((g) => [g.place, g.score, ...g.names]);
+const cutoffOf = (res) => (res.cutoff ? [res.cutoff.place, res.cutoff.slots, ...res.cutoff.names] : null);
+
+const SEVEN = { あおき: 9, いとう: 8, うえの: 8, えんどう: 7, おおた: 7, かとう: 7, きむら: 5 };
+
+test("success: ranking は正解数の多い順に組を返し、景品の数をまたぐ同点の組を cutoff にする", () => {
+  const res = ranking(rankEnv(scoreSheet(SEVEN)), "5");
+  assert.deepEqual(Object.keys(res).sort(), ["answered", "cutoff", "groups", "limit", "total", "updatedAt"]);
+  assert.equal(res.total, 7);
+  assert.equal(res.limit, 5);
+  assert.deepEqual([...res.answered], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // [9, 8, 8, 7, 7, 7, 5]・景品 5つ → 1位(1人) 2位(2人) 4位(3人)。4位の3人で、残り2枠
+  assert.deepEqual(groupsOf(res), [[1, 9, "あおき"], [2, 8, "いとう", "うえの"], [4, 7, "えんどう", "おおた", "かとう"]]);
+  assert.deepEqual(cutoffOf(res), [4, 2, "えんどう", "おおた", "かとう"]);
+  assert.ok(!JSON.stringify(res).includes("きむら")); // 景品に届かない人は返さない
+});
+
+test("success: ranking の順位と cutoff / slots の決まり", () => {
+  const tests = {
+    "success: limit を省くと 5": [SEVEN, undefined, [[1, 9, 1], [2, 8, 2], [4, 7, 3]], [4, 2]],
+    "success: ちょうど届く組は cutoff にしない": [SEVEN, "3", [[1, 9, 1], [2, 8, 2]], null],
+    "success: 2位の同点が景品 2つをまたぐ": [SEVEN, "2", [[1, 9, 1], [2, 8, 2]], [2, 1]],
+    "success: 景品 1つ": [SEVEN, "1", [[1, 9, 1]], null],
+    "success: 景品 6つ（4位の3人まででちょうど）": [SEVEN, "6", [[1, 9, 1], [2, 8, 2], [4, 7, 3]], null],
+    "success: 景品が人数より多ければ全員": [SEVEN, "30", [[1, 9, 1], [2, 8, 2], [4, 7, 3], [7, 5, 1]], null],
+    "success: 1位が同点で景品 1つ": [{ あ: 9, い: 9, う: 8 }, "1", [[1, 9, 2]], [1, 1]],
+    "success: 1位が同点で景品 2つ": [{ あ: 9, い: 9, う: 8 }, "2", [[1, 9, 2]], null],
+    "success: 同点のあとの順位は人数ぶん飛ぶ": [{ あ: 9, い: 9, う: 8, え: 7 }, "5", [[1, 9, 2], [3, 8, 1], [4, 7, 1]], null],
+    "success: 0問正解の人も、枠が余っていれば入る": [{ あ: 3, い: 0, う: 0 }, "5", [[1, 3, 1], [2, 0, 2]], null],
+    "success: 0問正解の人は、枠が埋まっていれば出ない": [{ あ: 5, い: 4, う: 3, え: 2, お: 1, か: 0, き: 0 }, "5", [[1, 5, 1], [2, 4, 1], [3, 3, 1], [4, 2, 1], [5, 1, 1]], null],
+    "success: 全員 0問正解で景品より多い": [{ あ: 0, い: 0, う: 0 }, "2", [[1, 0, 3]], [1, 2]],
+    "success: 全員が同点": [{ あ: 6, い: 6, う: 6, え: 6, お: 6, か: 6 }, "5", [[1, 6, 6]], [1, 5]],
+    "success: 1人だけ": [{ あ: 4 }, "5", [[1, 4, 1]], null],
+  };
+  for (const [name, [scores, limit, wantGroups, wantCutoff]] of Object.entries(tests)) {
+    const res = ranking(rankEnv(scoreSheet(scores)), limit);
+    assert.deepEqual(res.groups.map((g) => [g.place, g.score, g.names.length]), wantGroups, name);
+    assert.deepEqual(res.cutoff ? [res.cutoff.place, res.cutoff.slots] : null, wantCutoff, name);
+    assert.equal(res.total, Object.keys(scores).length, name);
+    // cutoff の名前は、その順位の組の名前と同じ。枠は「1人以上・その組の人数未満」
+    if (res.cutoff) {
+      assert.deepEqual([...res.cutoff.names], [...res.groups.at(-1).names], name);
+      assert.ok(res.cutoff.slots >= 1 && res.cutoff.slots < res.cutoff.names.length, name);
+    }
+  }
+});
+
+test("success: ranking は誰も答えていなければ、空の一覧を返す", () => {
+  const res = ranking(rankEnv([]), "5");
+  assert.deepEqual([res.total, [...res.groups], res.cutoff], [0, [], null]);
+});
+
+test("success: ranking の組の中は日本語の並び順。名前は前後の空白を除く", () => {
+  const rows = [...scoreRows("たなか", 3), ...scoreRows("　あいだ　", 3), ...scoreRows("さとう", 3), ...scoreRows("山田  太郎", 3)];
+  assert.deepEqual(groupsOf(ranking(rankEnv(rows), "5")), [[1, 3, "あいだ", "さとう", "たなか", "山田 太郎"]]);
+});
+
+test("success: ranking は同じ名前 × 同じ問題の最新の回答だけを採点する", () => {
+  const env = rankEnv([
+    answerRow("たなか", 1, "B", 10),
+    answerRow("たなか", 1, "A", 20), // 不正解 → 正解 に送り直した
+    answerRow("さとう", 1, "A", 10),
+    answerRow("さとう", 1, "B", 20), // 正解 → 不正解 に送り直した
+    answerRow("さとう", 2, "A"),
+    answerRow(" さとう ", 3, "A"), // 空白のゆれは同じ人
+    answerRow("ＡＢＣ", 1, "A"),
+    answerRow("ABC", 2, "A"), // 全角/半角のゆれは同じ人。名前はいちばん新しい行の書き方で出す
+    answerRow("ABC", 2, "ａ", 30), // 同じ回答の送り直しは1問ぶん（全角・小文字も同じ回答）
+    answerRow("", 1, "A"), // 名前のない行は、誰か分からないので順位に入れない
+    answerRow("", 2, "A"),
+    answerRow("すずき", 4, "E"), // 選択肢にない値は回答に数えない
+  ]);
+  const res = ranking(env, "5");
+  assert.deepEqual(groupsOf(res), [[1, 2, "ABC", "さとう"], [3, 1, "たなか"]]);
+  assert.equal(res.total, 3);
+  assert.equal(res.cutoff, null);
+});
+
+test("success: ranking は受付時間内の回答だけを採点する（受付前・締め切り後の行は入らない）", () => {
+  const env = rankEnv([
+    quizRow(50, "早井", 1, "A"), // 受付前にフォームへ直接送った
+    quizRow(99.5, "境", 1, "A"), // 開ける1秒前まで（時計のずれの分）は入る
+    answerRow("山田", 1, "A"),
+    answerRow("山田", 2, "A"),
+    quizRow(250, "山田", 1, "B"), // 締め切り後の送り直しでは、受付中の回答は上書きされない
+    answerRow("佐藤", 1, "B"),
+    quizRow(250, "佐藤", 1, "A"), // 締め切り後に正解を見てから送り直しても、正解にはならない
+    quizRow(1104, "滑込", 10, "A"), // 第10問の締め切り（1100秒）の4秒後 → 入る
+    quizRow(1110, "遅井", 10, "A"), // 締め切りの10秒後 → 入らない
+    quizRow(350, "先回り", 9, "A"), // 第9問はまだ受け付けていない時刻 → 入らない
+    ["", "時刻なし", "A", ...Array(9).fill("")], // タイムスタンプが無い行は入らない
+  ]);
+  const res = ranking(env, "30");
+  assert.deepEqual(groupsOf(res), [[1, 2, "山田"], [2, 1, "滑込", "境"], [4, 0, "佐藤"]]); // 漢字は読みではなく文字の順
+  assert.equal(res.total, 4);
+
+  // クイズを一度も受け付けていなければ、行があっても誰も入らない / 受付の記録を消したあとも同じ
+  const never = load({ sheets: { [QUIZ_SHEET]: [QUIZ_HEADER, answerRow("山田", 1, "A")], 正解: answerSheet() } });
+  assert.deepEqual([ranking(never, "5").total, [...ranking(never, "5").groups]], [0, []]);
+  env.get({ action: "reset", key: HOST_KEY });
+  assert.equal(ranking(env, "5").total, 0);
+
+  // O キーで開け直した時間の回答は入る
+  const reopened = rankEnv([answerRow("山田", 1, "A"), quizRow(1505, "遅刻", 1, "A")]);
+  reopened.setOpen("q1", 1500);
+  reopened.setOpen("none", 1510);
+  reopened.at(2000);
+  const again = ranking(reopened, "5");
+  assert.deepEqual(again.groups.map((g) => [g.place, g.score]), [[1, 1]]);
+  assert.deepEqual([...again.groups[0].names].sort(), ["山田", "遅刻"].sort());
+});
+
+test("success: ranking は正解が書かれた問題だけを採点し、その番号を answered で返す", () => {
+  const rows = [...scoreRows("たなか", 10), ...scoreRows("さとう", 2), ...scoreRows("すずき", 0)];
+  // 正解が第1問・第2問・第10問にだけ書かれている（ほかは未記入）
+  const partial = ranking(rankEnv(rows, answerSheet("A", [10, 1, 2])), "5");
+  assert.deepEqual([...partial.answered], [1, 2, 10]);
+  assert.deepEqual(groupsOf(partial), [[1, 3, "たなか"], [2, 2, "さとう"], [3, 0, "すずき"]]);
+  // 正解の書き方のゆれ（全角・小文字・「第3問」）と、想定外の行（E・空欄・範囲外）
+  const messy = ranking(rankEnv(rows, [["問題番号", "正解"], ["第3問", "ａ"], [4, "E"], [5, ""], [11, "A"], ["", "A"]]), "5");
+  assert.deepEqual([...messy.answered], [3]);
+  assert.deepEqual(groupsOf(messy), [[1, 1, "たなか"], [2, 0, "さとう", "すずき"]]);
+  // 正解が A でないとき
+  const other = ranking(rankEnv(rows, answerSheet("B")), "5");
+  assert.deepEqual(groupsOf(other), [[1, 10, "すずき"], [2, 8, "さとう"], [3, 0, "たなか"]]);
+});
+
+test("failed: 「正解」タブが無い・正解が1つも無いときは answers_error、クイズのシートを読めなければ ranking_error（名前は返さない）", () => {
+  const rows = scoreSheet(SEVEN);
+  const names = Object.keys(SEVEN);
+  const tests = {
+    "failed: 「正解」タブが無い": [rankEnv(rows, null), "answers_error", /正解を読めません.*正解/],
+    "failed: 「正解」タブに見出ししか無い": [rankEnv(rows, [["問題番号", "正解"]]), "answers_error", /1つも書かれていません/],
+    "failed: 「正解」タブに有効な行が無い": [rankEnv(rows, [["問題番号", "正解"], [1, "E"], [11, "A"], [2, ""]]), "answers_error", /1つも書かれていません/],
+    "failed: クイズのタブが無い": [load({ sheets: { 正解: answerSheet() } }), "ranking_error", /クイズの回答を読めません/],
+    "failed: タイムスタンプの列が無い": [load({ sheets: { [QUIZ_SHEET]: [QUIZ_HEADER.slice(1), ["あおき", "A"]], 正解: answerSheet() } }), "ranking_error", /タイムスタンプ/],
+  };
+  for (const [name, [env, error, message]] of Object.entries(tests)) {
+    const text = env.raw({ action: "ranking", key: HOST_KEY, limit: "5" });
+    const res = JSON.parse(text);
+    assert.deepEqual(Object.keys(res), ["error", "message"], name);
+    assert.equal(res.error, error, name);
+    assert.match(res.message, message, name);
+    for (const who of names) assert.ok(!text.includes(who), name + " " + who);
+  }
+});
+
+test("failed: ranking は司会キーが違う・無いときは名前も正解数も返さない", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  for (const key of [undefined, "", "wrong", HOST_KEY + "x", HOST_KEY.slice(0, -1), HOST_KEY.toUpperCase()]) {
+    for (const limit of [undefined, "5", "99"]) {
+      const text = env.raw({ action: "ranking", key, limit });
+      assert.deepEqual(Object.keys(JSON.parse(text)), ["error", "message"]);
+      assert.equal(JSON.parse(text).error, "unauthorized");
+      for (const who of Object.keys(SEVEN)) assert.ok(!text.includes(who), who);
+      assert.ok(!/groups|score|place/.test(text));
+    }
+  }
+  for (const props of [{}, { HOST_KEY: "short" }]) {
+    const unset = load({ props, sheets: { [QUIZ_SHEET]: [QUIZ_HEADER, ...scoreRows("たなか", 3)], 正解: answerSheet() } });
+    const text = unset.raw({ action: "ranking", key: props.HOST_KEY || "", limit: "5" });
+    assert.equal(JSON.parse(text).error, "not_configured");
+    assert.ok(!text.includes("たなか"));
+  }
+});
+
+test("failed: ranking の limit が 1〜30 の整数でなければ bad_request（名前は返さない）", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  for (const limit of ["0", "31", "99", "100", "-1", "05", "5.0", "1.5", "5人", "５", " 5", "5 ", "abc", "NaN", "__proto__", "0x5", "1e1", "Infinity"]) {
+    const text = env.raw({ action: "ranking", key: HOST_KEY, limit });
+    assert.deepEqual(Object.keys(JSON.parse(text)), ["error", "message"], limit);
+    assert.equal(JSON.parse(text).error, "bad_request", limit);
+    assert.match(JSON.parse(text).message, /1〜30/, limit);
+    for (const who of Object.keys(SEVEN)) assert.ok(!text.includes(who), limit);
+  }
+  // 省略・空なら 5。1 と 30 は受け付ける
+  for (const [limit, want] of [[undefined, 5], ["", 5], ["1", 1], ["5", 5], ["10", 10], ["30", 30]]) {
+    const res = ranking(env, limit);
+    assert.equal(res.error, undefined, String(limit));
+    assert.equal(res.limit, want, String(limit));
+  }
+});
+
+test("success: 司会キーのない応答には、どの呼び出しでも名前・正解数が含まれない（ranking を呼んだあとも）", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  assert.equal(ranking(env, "5").groups.length, 3); // 司会キー付きで取得したあとでも、キャッシュなどから漏れない
+  const names = [...Object.keys(SEVEN), "予想だけの人"];
+  const actions = [undefined, "state", "ranking", "predHits", "answers", "slides", "setOpen", "reset", "unknown"];
+  for (const action of actions) {
+    for (const extra of [{}, { limit: "5" }, { limit: "5", key: "wrong" }, { limit: "5", key: "" }, { limit: "5", callback: "cb" }]) {
+      const text = env.raw({ action, ...extra });
+      for (const who of names) assert.ok(!text.includes(who), JSON.stringify({ action, ...extra }) + " " + who);
+      assert.ok(!/names|groups|cutoff|score|answered/.test(text), JSON.stringify({ action, ...extra }));
+    }
+  }
+  for (const value of env.cacheStore.values()) for (const who of names) assert.ok(!String(value).includes(who));
+  // 司会キー付きでも、名前を返すのは ranking と predHits だけ
+  for (const params of [{}, { action: "state" }, { action: "answers" }, { action: "setOpen", target: "idle" }]) {
+    const text = env.raw({ ...params, key: HOST_KEY });
+    for (const who of names) assert.ok(!text.includes(who), JSON.stringify(params) + " " + who);
+  }
+  // 人数の集計は、これまでと同じ形のまま（名前を持ち回すようになっても、公開する応答は変わらない）
+  const stats = env.get();
+  assert.deepEqual(Object.keys(stats).sort(), ["pred", "quiz", "state", "updatedAt"]);
+  assert.deepEqual({ ...stats.quiz["1"] }, { total: 7 });
+  assert.deepEqual({ ...env.buildStats_(env.readGate_()).quiz["1"] }, { A: 7, B: 0, C: 0, D: 0, total: 7 });
+  // JSONP でも返せる（司会キー付き）
+  const jsonp = env.doGet({ parameter: { action: "ranking", key: HOST_KEY, limit: "1", callback: "cb1" } });
+  assert.equal(jsonp.mime, "JAVASCRIPT");
+  assert.match(jsonp.text, /^cb1\(\{.*"groups":\[\{"place":1,"score":9,"names":\["あおき"\]\}\],"cutoff":null\}\);$/);
+});
+
+test("success: testRanking は順位ごとの人数だけをログに出す（名前は出さない）", () => {
+  const env = rankEnv(scoreSheet(SEVEN));
+  const logs = [];
+  env.Logger.log = (line) => logs.push(String(line));
+  env.testRanking();
+  const text = logs.join("\n");
+  assert.match(text, /1位: 9問正解 × 1人/);
+  assert.match(text, /2位: 8問正解 × 2人/);
+  assert.match(text, /4位の 3人で残り 2枠/);
+  for (const who of Object.keys(SEVEN)) assert.ok(!text.includes(who), who);
+});
+
 /* ===== 正解（?action=answers） ===== */
 
 test("success: 正解は司会キーが合うときだけ返す（見出し・範囲外・空欄の行は飛ばす）", () => {
@@ -528,6 +775,19 @@ const classifyCases = {
   "success: 文中の 予想 と 結果 は目印ではない": [["予想の結果は最後に発表します", "結果を予想してみましょう"], { kind: "slide" }],
   "success: 結果発表 だけでは予想結果ではない": [["結果発表", "的中者"], { kind: "slide" }],
   "success: 問題の題名は予想結果より優先": [["Q3", "予想結果"], { kind: "question", question: 3 }],
+  "success: ランキング（題名）": [["クイズ大会", "ランキング"], { kind: "ranking" }],
+  "success: クイズランキング / 全角・空白・改行": [["クイズ\nランキング　"], { kind: "ranking" }],
+  "success: 成績発表": [["成績発表"], { kind: "ranking" }],
+  "success: ランキング発表！ / クイズ成績発表 / クイズのランキング": [["ランキング発表！"], { kind: "ranking" }],
+  "success: クイズ成績発表": [["クイズ成績発表："], { kind: "ranking" }],
+  "success: クイズのランキング": [["クイズのランキング"], { kind: "ranking" }],
+  "success: 半角カナの ﾗﾝｷﾝｸﾞ": [["ﾗﾝｷﾝｸﾞ"], { kind: "ranking" }],
+  "success: 続きのある ランキング は目印ではない": [["ランキングは最後に発表します", "ランキング上位に景品"], { kind: "slide" }],
+  "success: 成績 / 結果発表 / クイズ だけではランキングではない": [["成績", "結果発表", "クイズ", "クイズ結果"], { kind: "slide" }],
+  "success: 問題の題名はランキングより優先": [["Q3", "ランキング"], { kind: "question", question: 3 }],
+  "success: 予想結果はランキングより優先": [["予想結果", "ランキング"], { kind: "predResult" }],
+  "success: ランキングのスライドに 何問そろ があっても、予想の受付は開けない": [["ランキング", "何問そろったでしょう"], { kind: "ranking" }],
+  "success: 予想タイム はランキングではない": [["予想タイム", "ランキングはあとで"], { kind: "prediction" }],
   "success: 以前の 第N問 回答数 は映さない": [["第5問 回答数", "回答数のグラフをここに貼ります"], { kind: "legacy" }],
   "success: 以前の Q5 回答数 は映さない": [["Q5：回答数"], { kind: "legacy" }],
   "success: 以前の 予想 回答数 は映さない": [["予想 回答数"], { kind: "legacy" }],
@@ -587,6 +847,20 @@ test("success: 予想結果のスライドは predResult で返す（2枚目は�
   const out = load({ slides: deck }).doGet({ parameter: { action: "slides", key: HOST_KEY } });
   assert.deepEqual(JSON.parse(out.text).slides.map((s) => [s.objectId, s.kind]), [["r1", "prediction"], ["r2", "predResult"], ["r3", "slide"]]);
   assert.ok(!out.text.includes("予想結果"));
+});
+
+test("success: ランキングのスライドは ranking で返す（2枚目は普通のスライド。文字は返さない）", () => {
+  const deck = [
+    slide("k1", [shape("Q1"), shape("問題文")]),
+    slide("k2", [shape("予想結果")]),
+    slide("k3", [shape("クイズ大会"), group(shape("ランキング"))]),
+    slide("k4", [shape("成績発表"), shape("おめでとうございます")]),
+  ];
+  const env = load({ slides: deck });
+  const out = env.doGet({ parameter: { action: "slides", key: HOST_KEY } });
+  assert.deepEqual(JSON.parse(out.text).slides.map((s) => [s.objectId, s.kind]), [["k1", "question"], ["k2", "predResult"], ["k3", "ranking"], ["k4", "slide"]]);
+  assert.ok(!out.text.includes("ランキング") && !out.text.includes("成績"));
+  env.testSlides();
 });
 
 test("success: 2回目はキャッシュを使い、refresh で作り直す", () => {

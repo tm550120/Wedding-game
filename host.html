@@ -58,6 +58,14 @@
     <p class="pred-names-closing hidden" id="pred-names-closing"></p>
   </div>
 
+  <!-- 「ランキング」のスライド: クイズの成績上位（スライドの上に重ねる。組は js/host.js が入れる） -->
+  <div class="rank hidden" id="rank">
+    <p class="rank-kicker">✦ クイズ ランキング ✦</p>
+    <p class="rank-title">TOP <span class="rank-title-num" id="rank-limit">5</span></p>
+    <ol class="rank-list" id="rank-list"></ol>
+    <p class="rank-message hidden" id="rank-message"></p>
+  </div>
+
   <!-- Apps Script の URL が未設定のときの案内 -->
   <section class="card host-setup hidden" id="setup">
     <h2>Apps Script の URL が未設定です</h2>

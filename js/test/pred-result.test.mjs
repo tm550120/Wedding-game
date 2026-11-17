@@ -169,10 +169,10 @@ test("success: nameScale は長い名前だけを縮める", () => {
   assert.equal(nameScale("", fit), 1);
 });
 
-test("success: 仮のスライドの最後に、予想結果のスライドがある", () => {
+test("success: 仮のスライドの予想のあとに、予想結果のスライドがある", () => {
   const slides = panelSlides();
-  assert.equal(slides.length, 12);
-  assert.deepEqual(slides.map((s) => s.kind).slice(-2), ["prediction", "predResult"]);
+  assert.equal(slides.length, 13);
+  assert.deepEqual(slides.map((s) => s.kind).slice(-3), ["prediction", "predResult", "ranking"]);
   assert.equal(new Set(slides.map((s) => s.objectId)).size, slides.length);
   assert.match(slides.at(-1).imageUrl, /^data:image\/svg\+xml/);
 });
