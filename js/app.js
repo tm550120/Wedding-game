@@ -102,6 +102,27 @@ function renderCountdown() {
   if (left !== null) $("live-countdown").textContent = left > 0 ? "残り約 " + left + "秒" : "まもなく締め切ります";
 }
 
+/** お題1つ分の表示（「お題1 旅行に行くならどこ？」＋ A〜D の選択肢を 2×2）。 */
+function topicItem(topic, i) {
+  const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const li = el("li", "topic");
+  const title = el("p", "topic-title");
+  title.append(el("span", "topic-no", "お題" + (i + 1)), document.createTextNode(topic.text));
+  const options = el("ul", "topic-options");
+  (topic.choices || []).forEach((choice, n) => {
+    const option = el("li", "topic-option");
+    option.append(el("span", "topic-letter", String.fromCharCode(65 + n)), document.createTextNode(choice));
+    options.appendChild(option);
+  });
+  li.append(title, options);
+  return li;
+}
+
 let lastSignature = "";
 
 /** live 画面を、いまの状態に合わせる。見た目が変わらないときは作り直さない（押している途中のボタンを消さないため）。 */
@@ -142,6 +163,12 @@ function render() {
   setLines($("live-prompt"), prompt);
   setLines($("live-note"), note);
   $("live-note").classList.toggle("hidden", note.length === 0);
+
+  // お題の一覧（予想だけ。config.js の topics）。受付中だけ出す。空・未定義なら何も出さない
+  const topics = mode === "question" && Array.isArray(section.topics) ? section.topics : [];
+  $("screen-live").classList.toggle("with-topics", topics.length > 0);
+  $("live-topics").classList.toggle("hidden", topics.length === 0);
+  $("live-topics").replaceChildren(...topics.map(topicItem));
 
   // 選択肢は受付中だけ出す。送信済みの問題は、送った回答を表示したまま押せなくする
   const choices = $("live-choices");

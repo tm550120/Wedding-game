@@ -269,6 +269,11 @@ function renderPredResult(step) {
   const message = !loaded ? "読み込み中…" : count === 0 ? "ぴったり当てた人はいませんでした…！\nみなさん、惜しかったです" : "";
   $("pred-names-message").textContent = message;
   $("pred-names-message").classList.toggle("hidden", names.length > 0);
+
+  // 締めのひとこと（HOST.predResultClosing）。的中した人がいるときだけ、名前の下に出す
+  const closing = loaded && count > 0 ? String(HOST.predResultClosing || "") : "";
+  $("pred-names-closing").textContent = closing;
+  $("pred-names-closing").classList.toggle("hidden", closing === "");
 }
 
 /** 画面全体を、いまの状態に合わせる。 */

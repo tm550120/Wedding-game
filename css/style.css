@@ -92,3 +92,22 @@ button.choice.selected:disabled{ opacity:1; }
 .countdown{ text-align:center; font-size:14px; letter-spacing:.12em; color:var(--gold-light); margin:-10px 0 16px; font-variant-numeric:tabular-nums; }
 .notice{ font-size:13px; line-height:1.7; text-align:center; color:#ffd9cc; margin:18px 0 0; }
 .demo-badge{ font-size:12px; color:var(--gold-light); border:1px solid var(--gold-light); border-radius:14px; padding:4px 12px; margin-top:18px; }
+
+/* ---- 以心伝心ゲームのお題の一覧（予想の受付中だけ。config.js の topics） ---- */
+.topics{ list-style:none; margin:0 0 12px; padding:0; display:flex; flex-direction:column; gap:5px; }
+.topic{ border:1px solid rgba(201,162,39,.4); border-radius:8px; background:rgba(0,0,0,.16); padding:5px 10px; }
+.topic-title{ margin:0 0 3px; font-size:14px; line-height:1.4; font-weight:600; }
+.topic-no{ color:var(--gold-light); font-size:12px; letter-spacing:.08em; margin-right:.6em; }
+.topic-options{ list-style:none; margin:0; padding:0; display:grid; grid-template-columns:1fr 1fr; gap:1px 10px; }
+.topic-option{ font-size:13px; line-height:1.45; color:#e6dfc8; }
+.topic-letter{ color:var(--gold); font-weight:700; margin-right:.4em; }
+/* お題を出している間は、見出し・質問文・ボタンを詰めて、送信するボタンまで 1画面に収める */
+#screen-live.with-topics{ padding-top:16px; padding-bottom:20px; }
+#screen-live.with-topics .who{ margin:0 0 6px; }
+#screen-live.with-topics .progress{ margin:0 0 6px; }
+#screen-live.with-topics .qtext{ font-size:18px; line-height:1.45; margin:0 0 10px; }
+#screen-live.with-topics .countdown{ margin:-4px 0 10px; }
+/* 0問〜5問 は 3×2 に並べ替える（2×3 のままだと送信するボタンが画面の下にはみ出す） */
+#screen-live.with-topics .choices.cols-2{ grid-template-columns:repeat(3, 1fr); gap:8px; }
+#screen-live.with-topics .choices.cols-2 button.choice{ font-size:20px; padding:12px 4px; }
+#screen-live.with-topics .primary{ margin-top:12px; padding:14px; }
