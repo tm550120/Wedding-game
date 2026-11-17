@@ -137,6 +137,8 @@ body.host{ height:100vh; min-height:0; overflow:hidden; padding:0; display:block
   box-shadow:0 .6vh 2vh rgba(0,0,0,.35);
 }
 .rank-row.shown{ visibility:visible; animation:rank-row .7s cubic-bezier(.2,.9,.3,1.1) both; }
+/* 景品のスライドから戻ってきたとき、前から映していた組は動かさずに出す */
+.rank-row.shown.steady{ animation:none; }
 /* いま発表した組は、枠を明るくする */
 .rank-row.fresh{ border-color:var(--gold-light); box-shadow:0 0 0 .6vh rgba(232,207,122,.2), 0 .6vh 3vh rgba(0,0,0,.5); }
 .rank-head{ display:flex; align-items:baseline; gap:1.8vh; min-height:8vh; white-space:nowrap; }

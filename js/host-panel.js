@@ -1,6 +1,7 @@
 /*
  * 司会画面の「仮のスライド」。Google スライドを映せないとき（司会キーがない、?panel=1、取得に失敗）と、
  * デモ表示（?demo=1）で、スライドの代わりに映す。問題ごとに1枚ずつ、その場で作った画像（SVG）を使う。
+ * ランキングのあとには「2位の景品」「1位の景品」の仮のスライドも並べる（順位の発表の途中にはさむ流れを確認できる）。
  */
 import { ALL_TARGETS, parseTarget } from "./gate.js";
 
@@ -38,12 +39,17 @@ export function rankingSlide(objectId, foot = "") {
   return { objectId, kind: "ranking", imageUrl: placeholderImage("クイズ ランキング", "成績上位のみなさまを発表します", foot) };
 }
 
-/** 第1問〜第10問と予想、予想結果、ランキングを、1枚ずつ仮のスライドにした一覧（本物のスライド一覧と同じ形）。 */
+/** 「N位の景品」のスライド（ランキングで N位を映したあとに、はさんで映す。js/prize-flow.js）の、スライド一覧の1件。 */
+export function prizeSlide(place, objectId, foot = "") {
+  return { objectId, kind: "prize", place, imageUrl: placeholderImage(place + "位の景品", "ここに景品の写真と名前が入ります", foot) };
+}
+
+/** 第1問〜第10問と予想、予想結果、ランキング、2位・1位の景品を、1枚ずつ仮のスライドにした一覧（本物のスライド一覧と同じ形）。 */
 export function panelSlides() {
   const slides = ALL_TARGETS.map((target) => {
     const { section, index } = parseTarget(target);
     const title = section.id === "quiz" ? section.answerLabel(index) : section.title;
     return targetSlide(target, "panel-" + target, placeholderImage(title, section.promptLines.join(" ")));
   });
-  return [...slides, predResultSlide("panel-predResult"), rankingSlide("panel-ranking")];
+  return [...slides, predResultSlide("panel-predResult"), rankingSlide("panel-ranking"), prizeSlide(2, "panel-prize2"), prizeSlide(1, "panel-prize1")];
 }

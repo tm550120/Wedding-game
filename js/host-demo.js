@@ -7,7 +7,7 @@
  * 返す形は本物（apps-script/Code.gs → js/host-api.js）と同じにしてある。
  */
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, readDemoGate, reduceGate, writeDemoGate } from "./gate.js";
-import { placeholderImage, predResultSlide, rankingSlide, targetSlide } from "./host-panel.js";
+import { placeholderImage, predResultSlide, prizeSlide, rankingSlide, targetSlide } from "./host-panel.js";
 import { PRED_MAX } from "./pred-result.js";
 import { RANK_MAX_LIMIT, normalizeRanking, rankGroups } from "./ranking.js";
 
@@ -65,6 +65,9 @@ function demoSlides() {
     image("お題 1", "せーの！"),
     predResultSlide("", "デモ用の仮スライド"),
     rankingSlide("", "デモ用の仮スライド"),
+    // ランキングのすぐ後ろの景品のスライドは、その順位を映したあとにはさんで映す（4位 → 2位 → 2位の景品 → 1位 → 1位の景品）
+    prizeSlide(2, "", "デモ用の仮スライド"),
+    prizeSlide(1, "", "デモ用の仮スライド"),
     image("Thank you!", "ご参加ありがとうございました"),
   ];
   return pages.map((page, i) => ({ ...page, objectId: "demo" + (i + 1) }));

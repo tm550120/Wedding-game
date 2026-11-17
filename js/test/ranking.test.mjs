@@ -225,12 +225,12 @@ test("success: rankLayout は 1920×1080 に収まる並べ方を選ぶ", () => 
   assert.ok(nameScale("勅使河原 ゆきのじょう", fit) < 1);
 });
 
-test("success: 仮のスライドの最後に、ランキングのスライドがある", () => {
+test("success: 仮のスライドの最後に、ランキングと 2位・1位の景品のスライドがある", () => {
   const slides = panelSlides();
-  assert.equal(slides.at(-1).kind, "ranking");
+  assert.deepEqual(slides.slice(-3).map((s) => [s.kind, s.place ?? null]), [["ranking", null], ["prize", 2], ["prize", 1]]);
   assert.equal(slides.filter((s) => s.kind === "ranking").length, 1);
   assert.equal(new Set(slides.map((s) => s.objectId)).size, slides.length);
-  assert.match(slides.at(-1).imageUrl, /^data:image\/svg\+xml/);
+  for (const slide of slides.slice(-3)) assert.match(slide.imageUrl, /^data:image\/svg\+xml/);
 });
 
 test("success: デモはランキングのスライドと、同点のじゃんけんを含む架空の成績を返す", async () => {
