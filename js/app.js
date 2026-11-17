@@ -23,7 +23,7 @@
 import { SUBMIT, GATE, HOST } from "./config.js";
 import { submitAnswer } from "./submit.js";
 import { loadName, saveName, loadSent, saveSent, updateAllSent } from "./storage.js";
-import { fetchGate, guestMode, parseTarget, pruneSent, readDemoGate } from "./gate.js";
+import { fetchGate, gatePollDelay, guestMode, parseTarget, pruneSent, readDemoGate } from "./gate.js";
 import { autoCloseSeconds, guestRemaining, trackOpen } from "./countdown.js";
 import { fetchMyResult, resultLines, resultRetryDelay, RESULT_JITTER_MS } from "./my-result.js";
 
@@ -51,7 +51,7 @@ const loadGate = DEMO
 const loadResult = DEMO
   ? () => new Promise((resolve) => setTimeout(() => resolve({ ready: true, found: true, correct: 7, total: 10, rank: 8, tied: 3, participants: 23 }), 300))
   : HOST.statsUrl
-    ? (name) => fetchMyResult(HOST.statsUrl, name, { timeoutMs: GATE.timeoutMs, transport: HOST.transport })
+    ? (name) => fetchMyResult(HOST.statsUrl, name, { timeoutMs: GATE.resultTimeoutMs, transport: HOST.transport })
     : null;
 
 /** 回答の送信。デモでは Google フォームへ送らず、少し待って成功したことにする。 */
@@ -335,14 +335,14 @@ async function poll() {
     reconcileSent(state.gate); // 読めたときだけ。失敗したときに残してある古い状態では直さない
     syncResult();
   } catch (e) {
-    state.failures += 1; // つながらない・Apps Script が古い など。間隔をあけて読み直す
+    state.failures += 1; // つながらない・応答が返らない（GATE.timeoutMs で時間切れ）・Apps Script が古い など。読み直す
   } finally {
     pollBusy = false;
   }
   render();
-  // 全員が同時に読まないよう、毎回すこしずらす。失敗が続くほど間隔をあける
+  // 全員が同時に読まないよう、毎回すこしずらす。1回の失敗（応答が返らず時間切れ）ならいつもの間隔で読み直し、続いたら間隔をあける
   const base = DEMO ? 600 : GATE.pollMs + Math.random() * GATE.jitterMs;
-  pollTimer = setTimeout(poll, Math.min(base * 2 ** Math.min(state.failures, 5), Math.max(GATE.maxBackoffMs, base)));
+  pollTimer = setTimeout(poll, gatePollDelay(base, state.failures, GATE.maxBackoffMs));
 }
 
 /* ===== 起動 ===== */

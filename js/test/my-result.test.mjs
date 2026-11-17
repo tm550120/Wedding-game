@@ -71,9 +71,9 @@ test("failed: 想定の形でない応答（Code.gs が古い・エラー・数�
   for (const raw of bad) assert.throws(() => normalizeMyResult(raw), /unexpected result/, JSON.stringify(raw));
 });
 
-test("success: 読み直しの間隔は 2秒 → 4秒 → 8秒 → 15秒（上限）。最初に待つ時間の上限は 4秒", () => {
-  assert.deepEqual([1, 2, 3, 4, 5, 50].map(resultRetryDelay), [2000, 4000, 8000, 15000, 15000, 15000]);
-  assert.equal(resultRetryDelay(0), 2000);
+test("success: 読み直しの間隔は 1秒 → 2秒 → 4秒 → 8秒 → 10秒（上限）。最初に待つ時間の上限は 4秒", () => {
+  assert.deepEqual([1, 2, 3, 4, 5, 50].map(resultRetryDelay), [1000, 2000, 4000, 8000, 10000, 10000]);
+  assert.equal(resultRetryDelay(0), 1000);
   assert.equal(RESULT_JITTER_MS, 4000);
 });
 

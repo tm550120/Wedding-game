@@ -15,9 +15,12 @@ import { loadJson } from "./net.js";
 /** 成績を読みに行く前に待つ時間の上限（ミリ秒）。全員が同時に読みに行かないよう、0〜この時間をランダムに待つ。 */
 export const RESULT_JITTER_MS = 4000;
 
-/** 続けて failures 回失敗したあと、次に読むまで待つ時間（ミリ秒）。2秒 → 4秒 → 8秒 → 15秒（上限）。 */
+/**
+ * 続けて failures 回失敗したあと、次に読むまで待つ時間（ミリ秒）。1秒 → 2秒 → 4秒 → 8秒 → 10秒（上限）。
+ * Apps Script への読み取りは、ときどき応答が返らないまま止まる（GATE.resultTimeoutMs で時間切れ）ので、最初はすぐ読み直す。
+ */
 export function resultRetryDelay(failures) {
-  return Math.min(1000 * 2 ** Math.min(Math.max(failures, 1), 10), 15000);
+  return Math.min(1000 * 2 ** Math.min(Math.max(failures, 1) - 1, 10), 10000);
 }
 
 const isCount = (value, min) => Number.isInteger(value) && value >= min;

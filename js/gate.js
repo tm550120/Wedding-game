@@ -83,6 +83,16 @@ export async function fetchGate(url, options) {
 }
 
 /**
+ * 回答ページ用: 次に受付状態を読むまで待つ時間（ミリ秒）。base はいつもの間隔、failures は続けて失敗した回数。
+ * 1回失敗しただけなら、いつもの間隔のまま読み直す（Apps Script への読み取りは、ときどき応答が返らないまま止まる。
+ * そのたびに間隔をあけると、受付が開いたのに気づくのが遅れる）。2回以上続いたら 2倍・4倍…とあける（上限 maxBackoffMs）。
+ */
+export function gatePollDelay(base, failures, maxBackoffMs) {
+  if (!(failures > 1)) return base;
+  return Math.min(base * 2 ** Math.min(failures - 1, 5), Math.max(maxBackoffMs, base));
+}
+
+/**
  * 受付を切り替えたあとの状態を返す（Code.gs の setOpen_ と同じ決まり）。
  * 司会画面が、応答を待たずに表示を先に変えるためと、デモ表示のために使う。
  *   target: 対象 = その受付を開ける / "none" = 締め切る / "idle" = 締め切って待ち受けに戻す

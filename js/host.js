@@ -43,6 +43,7 @@ import { takeHostKey, fetchStats, fetchSlideList, fetchAnswers, fetchPredHits, f
 import { createDemoBackend } from "./host-demo.js";
 import { panelSlides } from "./host-panel.js";
 import { createPoller } from "./poller.js";
+import { ACTION_ATTEMPTS, actionTimeout, actionRetryDelay } from "./retry.js";
 import { ALL_TARGETS, EMPTY_GATE, parseTarget, targetLabel, reduceGate, revealRequest } from "./gate.js";
 import { autoCloseSeconds, countdownView } from "./countdown.js";
 import { PRED_START, matchedCountOf, predStep, stepPred, hitsNote, namesLayout, nameScale } from "./pred-result.js";
@@ -62,6 +63,9 @@ const RANK_LIMIT = rankLimitOf(HOST.rankingLimit); // 「ランキング」の�
 const QUESTION_COUNT = ALL_TARGETS.filter((target) => target !== "pred").length;
 
 const net = { timeoutMs: HOST.timeoutMs, transport: HOST.transport };
+// 司会の操作（受付の切り替え・成績の公開・正解・的中者・順位）。attempt は何回目の呼び出しか（1〜）。
+// 応答が返らないまま止まることがあるので、短い時間で見切って送り直す（js/retry.js）
+const actionNet = (attempt = 1) => ({ timeoutMs: actionTimeout(attempt, HOST.actionTimeoutMs), transport: HOST.transport });
 
 /*
  * Apps Script とのやり取り一式。null なら未設定。
@@ -74,11 +78,11 @@ const backend = DEMO
     : {
         loadStats: () => fetchStats(HOST.statsUrl, net),
         loadSlides: hostKey ? (refresh) => fetchSlideList(HOST.statsUrl, hostKey, refresh, { ...net, timeoutMs: HOST.slidesTimeoutMs }) : null,
-        loadAnswers: hostKey ? () => fetchAnswers(HOST.statsUrl, hostKey, net) : null,
-        loadPredHits: hostKey ? (n) => fetchPredHits(HOST.statsUrl, hostKey, n, net) : null,
-        loadRanking: hostKey ? (limit) => fetchRanking(HOST.statsUrl, hostKey, limit, net) : null,
-        setOpen: hostKey ? (target) => sendSetOpen(HOST.statsUrl, hostKey, target, net) : null,
-        revealResults: hostKey ? () => sendRevealResults(HOST.statsUrl, hostKey, net) : null,
+        loadAnswers: hostKey ? (attempt) => fetchAnswers(HOST.statsUrl, hostKey, actionNet(attempt)) : null,
+        loadPredHits: hostKey ? (n, attempt) => fetchPredHits(HOST.statsUrl, hostKey, n, actionNet(attempt)) : null,
+        loadRanking: hostKey ? (limit, attempt) => fetchRanking(HOST.statsUrl, hostKey, limit, actionNet(attempt)) : null,
+        setOpen: hostKey ? (target, attempt) => sendSetOpen(HOST.statsUrl, hostKey, target, actionNet(attempt)) : null,
+        revealResults: hostKey ? (attempt) => sendRevealResults(HOST.statsUrl, hostKey, actionNet(attempt)) : null,
       };
 const loadSlides = PANEL_ONLY ? null : backend?.loadSlides || null;
 
@@ -141,7 +145,10 @@ function totalOf(target) {
 
 /*
  * 受付の切り替え。表示は応答を待たずに先に変え、Apps Script へは「いちばん新しい望み」だけを送る
- * （続けて操作したときに、途中の状態を1つずつ送らない）。失敗したら間隔をあけて送り直す。
+ * （続けて操作したときに、途中の状態を1つずつ送らない）。
+ * 応答が返らない（HOST.actionTimeoutMs で時間切れ）・通信エラーのときは、少し待って伝わるまで送り直す
+ * （0.5秒 → 1秒 → 2秒 → 3秒。js/retry.js）。同じ切り替えを繰り返し送っても、Apps Script 側は
+ * 「すでにその状態なら何も変えない」ので、受付時間がずれたり、状態の番号（rev）が進んだりはしない。
  */
 let desired = null; // まだ Apps Script に伝わっていない切り替え先
 let writing = false;
@@ -203,16 +210,16 @@ function renderCountdown() {
 async function pumpGate() {
   if (writing) return;
   writing = true;
-  let wait = 0;
+  let failures = 0; // 続けて失敗した回数
   while (desired !== null) {
     const target = desired;
     try {
-      const gate = await backend.setOpen(target);
+      const gate = await backend.setOpen(target, failures + 1);
       if (desired === target) {
         desired = null;
         state.gate = gate;
       }
-      wait = 0;
+      failures = 0;
       setError("gate", "");
     } catch (e) {
       if (isFatal(e)) {
@@ -220,8 +227,8 @@ async function pumpGate() {
         setError("gate", "受付を切り替えられません: " + e.message);
       } else {
         setError("gate", "受付の切り替えに失敗（再試行中）");
-        wait = Math.min((wait || 500) * 2, 8000);
-        await new Promise((resolve) => setTimeout(resolve, wait));
+        failures += 1;
+        await new Promise((resolve) => setTimeout(resolve, actionRetryDelay(failures)));
       }
     }
   }
@@ -234,7 +241,8 @@ async function pumpGate() {
 /*
  * 各自の成績の公開。「ランキング」のスライドに来たら、ゲストのスマホに各自の成績（「10問中 7問正解」「23人中 8位」）を
  * 出せるよう、Apps Script に公開を頼む（?action=revealResults）。ランキングの表示とは別に進めるので、
- * 失敗しても・時間がかかっても、ランキングの発表は止まらない。通信エラーは間隔をあけて送り直す。
+ * 失敗しても・時間がかかっても、ランキングの発表は止まらない。応答が返らない・通信エラーのときは、少し待って
+ * 公開できるまで送り直す（受付の切り替えと同じ間隔。何度送っても同じ）。
  * すでに公開済みなら何も送らない。受付を開けると公開は取り消される（Code.gs）ので、次に来たときにまた頼む。
  */
 let revealingResults = false;
@@ -244,7 +252,7 @@ let resultsNote = ""; // 司会者への知らせ（ランキングのスライ�
 async function requestResults() {
   if (revealingResults || resultsGaveUp || !backend?.revealResults || !writable() || state.gate.results || state.gate.open) return;
   revealingResults = true;
-  let wait = 0;
+  let failures = 0; // 続けて失敗した回数
   while (!state.gate.results && !state.gate.open) {
     if (writing) {
       // 受付の切り替えを送っている途中なら、それが済んでから（順番が入れ替わらないように）
@@ -252,7 +260,7 @@ async function requestResults() {
       continue;
     }
     try {
-      const gate = await backend.revealResults();
+      const gate = await backend.revealResults(failures + 1);
       gateEpoch++; // この前に始めた取得の結果（公開する前の受付状態）は使わない
       // その間に受付の切り替えを始めていたら、先に変えてある表示はそのままにして、公開したことだけ覚える
       state.gate = writing ? { ...state.gate, results: !state.gate.open } : gate;
@@ -263,8 +271,8 @@ async function requestResults() {
         resultsNote = e.code === "unsupported" ? "各自の成績をスマホに出すには Apps Script を更新してください" : "各自の成績を公開できません: " + e.message;
         break;
       }
-      wait = Math.min((wait || 500) * 2, 8000);
-      await new Promise((resolve) => setTimeout(resolve, wait));
+      failures += 1;
+      await new Promise((resolve) => setTimeout(resolve, actionRetryDelay(failures)));
     }
   }
   revealingResults = false;
@@ -666,7 +674,7 @@ function enterMatchedCount(n) {
 
 let hitsSeq = 0; // 取得のたびに増える。数を入れ直したあとに届いた、前の数の結果を捨てるために使う
 
-/** 的中した人の名前を取得する（司会キーが要る）。通信エラーは3回まで試す。失敗しても「そろったのは」は映せる。 */
+/** 的中した人の名前を取得する（司会キーが要る）。応答が返らない・通信エラーは ACTION_ATTEMPTS 回まで試す。失敗しても「そろったのは」は映せる。 */
 async function loadPredHits(n) {
   const seq = ++hitsSeq;
   if (!backend?.loadPredHits) {
@@ -674,9 +682,9 @@ async function loadPredHits(n) {
     return;
   }
   state.hits = { n, status: "loading" };
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= ACTION_ATTEMPTS; attempt++) {
     try {
-      const res = await backend.loadPredHits(n);
+      const res = await backend.loadPredHits(n, attempt);
       if (seq !== hitsSeq) return;
       state.hits = { n, status: "ok", count: res.count, names: res.names };
       break;
@@ -688,11 +696,11 @@ async function loadPredHits(n) {
         state.hits = { n, status, message: e.message };
         break;
       }
-      if (attempt === 3) {
+      if (attempt === ACTION_ATTEMPTS) {
         state.hits = { n, status: "error" };
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      await new Promise((resolve) => setTimeout(resolve, actionRetryDelay(attempt)));
       if (seq !== hitsSeq) return;
     }
   }
@@ -701,7 +709,7 @@ async function loadPredHits(n) {
 
 let rankSeq = 0; // 取得のたびに増える。取得し直したあとに届いた、前の結果を捨てるために使う
 
-/** クイズの成績の順位を取得する（司会キーが要る）。通信エラーは3回まで試す。失敗しても → で次のスライドへ進める。 */
+/** クイズの成績の順位を取得する（司会キーが要る）。応答が返らない・通信エラーは ACTION_ATTEMPTS 回まで試す。失敗しても → で次のスライドへ進める。 */
 async function loadRanking() {
   const seq = ++rankSeq;
   if (!backend?.loadRanking) {
@@ -709,9 +717,9 @@ async function loadRanking() {
     return;
   }
   state.ranking = { status: "loading" };
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= ACTION_ATTEMPTS; attempt++) {
     try {
-      const data = await backend.loadRanking(RANK_LIMIT);
+      const data = await backend.loadRanking(RANK_LIMIT, attempt);
       if (seq !== rankSeq) return;
       state.ranking = { status: "ok", data };
       break;
@@ -723,11 +731,11 @@ async function loadRanking() {
         state.ranking = { status, message: e.message };
         break;
       }
-      if (attempt === 3) {
+      if (attempt === ACTION_ATTEMPTS) {
         state.ranking = { status: "error" };
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, 800 * attempt));
+      await new Promise((resolve) => setTimeout(resolve, actionRetryDelay(attempt)));
       if (seq !== rankSeq) return;
     }
   }
@@ -867,14 +875,28 @@ async function refreshSlides(mode) {
   if (retry) scheduleSlides(...retry);
 }
 
-/** 正解を取得する（司会キーが要る）。失敗しても、正解を映すときにもう一度試す。 */
+let answersSeq = 0; // 取得のたびに増える。取得し直したあとは、前の取得（の送り直し）をやめる
+
+/** 正解を取得する（司会キーが要る）。応答が返らない・通信エラーは ACTION_ATTEMPTS 回まで試す。それでも失敗したら、正解を映すときにもう一度試す。 */
 async function refreshAnswers() {
   if (!backend?.loadAnswers) return;
-  try {
-    state.answers = await backend.loadAnswers();
-    setError("answers", "");
-  } catch (e) {
-    setError("answers", e.code ? "正解: " + e.message : "正解を取得できません");
+  const seq = ++answersSeq;
+  for (let attempt = 1; attempt <= ACTION_ATTEMPTS; attempt++) {
+    try {
+      // 読めた正解は、前の取得のものでも使う（正解は取得のたびに変わるものではない）
+      state.answers = await backend.loadAnswers(attempt);
+      if (seq === answersSeq) setError("answers", "");
+      break;
+    } catch (e) {
+      if (seq !== answersSeq) return;
+      // e.code があれば、待っても直らない（キー違い・「正解」タブを読めない など）
+      if (e.code || attempt === ACTION_ATTEMPTS) {
+        setError("answers", e.code ? "正解: " + e.message : "正解を取得できません");
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, actionRetryDelay(attempt)));
+      if (seq !== answersSeq) return;
+    }
   }
   render();
 }
